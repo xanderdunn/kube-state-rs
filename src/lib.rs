@@ -14,14 +14,19 @@ use serde_json::json;
 
 pub struct NodeStateRestorer {
     client: Client,
+    namespace: String,
 }
 
 impl NodeStateRestorer {
-    pub async fn new() -> Result<Self, kube::Error> {
+    pub async fn new(namespace: &str) -> Result<Self, kube::Error> {
         let client = Client::try_default().await?;
-        Ok(NodeStateRestorer { client })
+        Ok(NodeStateRestorer {
+            client,
+            namespace: namespace.to_string(),
+        })
     }
 
+    /// A convenience debug class method that prints all config map data to console.
     pub async fn print_all_config_map_data(
         client: Client,
         namespace: &str,
@@ -39,6 +44,8 @@ impl NodeStateRestorer {
         Ok(())
     }
 
+    /// A convenience class method that returns all labels stored in the ConfigMap for a given node
+    /// name.
     pub async fn get_config_map_labels_for_node_name(
         node_name: &str,
         client: Client,
@@ -57,30 +64,50 @@ impl NodeStateRestorer {
         Ok(None)
     }
 
+    pub async fn get_labels_for_node_name(
+        node_name: &str,
+        client: Client,
+    ) -> Result<Option<BTreeMap<String, String>>, kube::Error> {
+        let nodes: Api<Node> = Api::all(client);
+
+        for node in nodes.list(&ListParams::default()).await? {
+            if let Some(name) = node.metadata.name {
+                if name == node_name {
+                    return Ok(node.metadata.labels);
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     pub async fn watch_nodes(&self) -> Result<(), watcher::Error> {
         let nodes: Api<Node> = Api::all(self.client.clone());
         let watcher = watcher(nodes, watcher::Config::default());
-        let config_map_name_space = "default";
 
         watcher
             .try_for_each(|event| async move {
                 match event {
                     Event::Applied(node) => {
+                        // This event is triggered when a node is either
+                        // added or modified.
                         // TODO: How do I tell the difference between an added node and a modified node?
-                        println!("Node Added/Modified: {:?}", node.metadata.name);
-                        println!("here1");
+                        println!(
+                            "Node Added/Modified: {:?}, resource_version: {:?}, labels: {:?}",
+                            node.metadata.name,
+                            node.metadata.resource_version,
+                            node.metadata.labels
+                        );
                         let config_maps: Api<ConfigMap> =
-                            Api::namespaced(self.client.clone(), config_map_name_space);
-                        println!("here2");
+                            Api::namespaced(self.client.clone(), &self.namespace);
                         // TODO: Get labels we have stored for this node if present
                         // TODO: If the node is missing one of these labels, apply it
                     }
                     Event::Deleted(node) => {
                         println!("Node Deleted: {:?}", node.metadata.name);
                         let config_maps: Api<ConfigMap> =
-                            Api::namespaced(self.client.clone(), config_map_name_space.clone());
+                            Api::namespaced(self.client.clone(), &self.namespace);
                         if let Some(labels) = &node.metadata.labels {
-                            println!("here3");
                             // TODO: No node name should be an error
                             let node_name = node.metadata.name.unwrap_or_default();
                             let mut config_map_data: BTreeMap<String, String> =
@@ -89,33 +116,32 @@ impl NodeStateRestorer {
                                 "resource_version".to_string(),
                                 node.metadata.resource_version.clone().unwrap_or_default(),
                             );
-                            println!("here4");
 
                             match config_maps.get(&node_name).await {
                                 Ok(_) => {
-                                    // TODO: Update the stored labels if they exist for this node
-                                    //println!("here5");
-                                    //let patch = Patch::Apply(json!({ "value": config_map_data }));
-                                    //config_maps
-                                    //.patch(&node_name, &PatchParams::default(), &patch)
-                                    //.await
-                                    //.map_err(|e| {
-                                    //// propagate the error
-                                    //let error_response = ErrorResponse {
-                                    //status: e.to_string(),
-                                    //message: format!(
-                                    //"Failed to patch config map for node {}: {}",
-                                    //node_name, e
-                                    //),
-                                    //reason: "Failed to patch config map".to_string(),
-                                    //code: 500,
-                                    //};
-                                    //watcher::Error::WatchError(error_response)
-                                    //})?;
+                                    // Update the stored labels if they exist for this node
+                                    config_maps
+                                        .patch(
+                                            &node_name,
+                                            &PatchParams::default(),
+                                            &Patch::Merge(&json!({ "data": config_map_data })),
+                                        )
+                                        .await
+                                        .map_err(|e| {
+                                            let error_response = ErrorResponse {
+                                                status: e.to_string(),
+                                                message: format!(
+                                                    "Failed to update config map for node {}: {}",
+                                                    node_name, e
+                                                ),
+                                                reason: "Failed to update config map".to_string(),
+                                                code: 500,
+                                            };
+                                            watcher::Error::WatchError(error_response)
+                                        })?;
                                 }
                                 Err(_) => {
                                     // Create the stored labels if they don't exist for this node
-                                    println!("here6");
                                     let data = ConfigMap {
                                         data: Some(config_map_data),
                                         metadata: ObjectMeta {
@@ -170,10 +196,12 @@ mod tests {
     #[tokio::test]
     async fn test_add_and_remove_nodes() {
         let client = Client::try_default().await.unwrap();
+        let test_node_name = "node1";
         println!(
-            "node1: {:?}",
+            "{}: {:?}",
+            test_node_name,
             NodeStateRestorer::get_config_map_labels_for_node_name(
-                "node1",
+                test_node_name,
                 client.clone(),
                 "default"
             )
@@ -182,13 +210,13 @@ mod tests {
         );
         let nodes: Api<Node> = Api::all(client.clone());
 
-        let node_watcher = NodeStateRestorer::new().await.unwrap();
+        let node_watcher = NodeStateRestorer::new("default").await.unwrap();
         tokio::spawn(async move {
             node_watcher.watch_nodes().await.unwrap();
         });
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
         // TODO: Do this for multiple nodes
-        let node_to_add = "node1";
         let node_label: String = thread_rng()
             .sample_iter(&Alphanumeric)
             .take(10)
@@ -199,30 +227,26 @@ mod tests {
         // Add nodes
         let node = Node {
             metadata: ObjectMeta {
-                name: Some(node_to_add.to_string()),
-                labels: Some({
-                    let mut labels = std::collections::BTreeMap::new();
-                    labels.insert("label_to_persist".to_string(), node_label);
-                    labels
-                }),
+                name: Some(test_node_name.to_string()),
                 ..Default::default()
             },
             ..Default::default()
         };
 
-        nodes.create(&PostParams::default(), &node).await.unwrap();
-        // TODO: Store node labels
+        let node = nodes.create(&PostParams::default(), &node).await.unwrap();
 
         // Check if nodes were added
         let node_list = nodes.list(&Default::default()).await.unwrap();
         assert!(node_list
             .items
             .iter()
-            .any(|n| n.metadata.name == Some(node_to_add.to_string())));
+            .any(|n| n.metadata.name == Some(test_node_name.to_string())));
+
+        // TODO: Add some labels to the node
 
         // Remove nodes
         nodes
-            .delete(node_to_add, &Default::default())
+            .delete(test_node_name, &Default::default())
             .await
             .unwrap();
 
@@ -231,16 +255,17 @@ mod tests {
         assert!(!node_list_after_deletion
             .items
             .iter()
-            .any(|n| n.metadata.name == Some(node_to_add.to_string())));
+            .any(|n| n.metadata.name == Some(test_node_name.to_string())));
 
         // TODO: Modify labels and nodes, then remove them, then restore them, and check that the
         // labels are restored properly
 
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         println!(
-            "node1: {:?}",
+            "{}: {:?}",
+            test_node_name,
             NodeStateRestorer::get_config_map_labels_for_node_name(
-                "node1",
+                test_node_name,
                 client.clone(),
                 "default"
             )
