@@ -1,0 +1,46 @@
+name: Rust
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  rust-cpu:
+    name: CPU - Build, lint & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout Sources
+        uses: actions/checkout@v3
+        with:
+          lfs: 'true'
+
+      - name: Start minikube
+        uses: medyagh/setup-minikube@master
+
+      - name: Try the cluster
+        run: kubectl get pods -A
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          override: true
+          toolchain: stable
+          profile: minimal
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Lint
+        working-directory: xla
+        run: ./lint.sh
+
+      - name: Build
+        working-directory: xla
+        run: cargo build
+
+      - name: Test
+        working-directory: xla
+        run: |
+          cargo test --verbose --all-targets
