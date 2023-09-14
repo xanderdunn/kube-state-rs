@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-kube = { version = "0.86.0", features = ["runtime", "derive"] }
+kube = { version = "0.86", features = ["runtime", "derive"] }
 k8s-openapi = { version = "0.20.0", features = ["latest"] }
 tokio = { version = "1.32", features = ["full", "rt"] }
 rand = "0.8"
+serde_json = "1.0"
+futures = "0.3"

@@ -14,5 +14,11 @@ Write a service that will preserve Nodes’ labels if they are deleted from the 
 - `cargo test`
 
 ### Questions
-- How will this service be run in production - this affects how the lib should be structured
-- This repo uses a local minikube to run integration tests with `cargo test`. This should be modified to match however tests are run for the team's other Kubernetes services.
+- How will this service be run in production? This affects how the lib should be structured.
+- This repo uses a local minikube to run integration tests with `cargo test` both locally for dev and in GitHub Action CI. This should be modified to match however tests are run for the team's other Kubernetes services.
+- This service assumes that every node has a metadata.name, and it assumes that the name will be a unique identifier. If that's not a safe assumption, where will the unique identifier be?
+
+### TODO
+- Using logging rather than println
+- Add a second integration test and deal with making sure minikube is in the same state at the start of each test
+- Add docstrings
