@@ -8,7 +8,7 @@ on:
 
 jobs:
   rust-cpu:
-    name: CPU - Build, lint & test
+    name: CPU - Lint, build, and test
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -33,17 +33,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Lint
-        working-directory: xla
         run: |
           pwd
           ls -lah ./
           ./lint.sh
 
       - name: Build
-        working-directory: xla
         run: cargo build
 
       - name: Test
-        working-directory: xla
         run: |
           cargo test --verbose --all-targets
