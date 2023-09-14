@@ -39,6 +39,24 @@ impl NodeStateRestorer {
         Ok(())
     }
 
+    pub async fn get_config_map_labels_for_node_name(
+        node_name: &str,
+        client: Client,
+        namespace: &str,
+    ) -> Result<Option<BTreeMap<String, String>>, kube::Error> {
+        let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
+
+        for cm in config_maps.list(&ListParams::default()).await? {
+            if let Some(name) = cm.metadata.name {
+                if name == node_name {
+                    return Ok(cm.data);
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     pub async fn watch_nodes(&self) -> Result<(), watcher::Error> {
         let nodes: Api<Node> = Api::all(self.client.clone());
         let watcher = watcher(nodes, watcher::Config::default());
@@ -54,7 +72,8 @@ impl NodeStateRestorer {
                         let config_maps: Api<ConfigMap> =
                             Api::namespaced(self.client.clone(), config_map_name_space);
                         println!("here2");
-                        // TODO: Restore the labels to the node
+                        // TODO: Get labels we have stored for this node if present
+                        // TODO: If the node is missing one of these labels, apply it
                     }
                     Event::Deleted(node) => {
                         println!("Node Deleted: {:?}", node.metadata.name);
@@ -64,14 +83,17 @@ impl NodeStateRestorer {
                             println!("here3");
                             // TODO: No node name should be an error
                             let node_name = node.metadata.name.unwrap_or_default();
-                            let config_map_data: BTreeMap<String, String> =
+                            let mut config_map_data: BTreeMap<String, String> =
                                 labels.clone().into_iter().collect();
+                            config_map_data.insert(
+                                "resource_version".to_string(),
+                                node.metadata.resource_version.clone().unwrap_or_default(),
+                            );
                             println!("here4");
 
                             match config_maps.get(&node_name).await {
                                 Ok(_) => {
-                                    // TODO
-                                    // Update the stored labels if they exist for this node
+                                    // TODO: Update the stored labels if they exist for this node
                                     //println!("here5");
                                     //let patch = Patch::Apply(json!({ "value": config_map_data }));
                                     //config_maps
@@ -148,9 +170,16 @@ mod tests {
     #[tokio::test]
     async fn test_add_and_remove_nodes() {
         let client = Client::try_default().await.unwrap();
-        NodeStateRestorer::print_all_config_map_data(client.clone(), "default")
+        println!(
+            "node1: {:?}",
+            NodeStateRestorer::get_config_map_labels_for_node_name(
+                "node1",
+                client.clone(),
+                "default"
+            )
             .await
-            .unwrap();
+            .unwrap()
+        );
         let nodes: Api<Node> = Api::all(client.clone());
 
         let node_watcher = NodeStateRestorer::new().await.unwrap();
@@ -208,9 +237,16 @@ mod tests {
         // labels are restored properly
 
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        NodeStateRestorer::print_all_config_map_data(client.clone(), "default")
+        println!(
+            "node1: {:?}",
+            NodeStateRestorer::get_config_map_labels_for_node_name(
+                "node1",
+                client.clone(),
+                "default"
+            )
             .await
-            .unwrap();
+            .unwrap()
+        );
 
         // TODO: Add the node back
         // TODO: Restore labels
