@@ -10,7 +10,7 @@ jobs:
   rust-cpu:
     name: CPU - Build, lint & test
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Sources
@@ -34,7 +34,10 @@ jobs:
 
       - name: Lint
         working-directory: xla
-        run: ./lint.sh
+        run: |
+          pwd
+          ls -lah ./
+          ./lint.sh
 
       - name: Build
         working-directory: xla
