@@ -33,10 +33,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Lint
-        run: |
-          pwd
-          ls -lah ./
-          ./lint.sh
+        run: ./lint.sh
 
       - name: Build
         run: cargo build
