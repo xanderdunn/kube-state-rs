@@ -11,37 +11,24 @@ use kube::{
     Client,
 };
 use serde_json::json;
+use tracing::debug;
 
-pub struct NodeStateRestorer {
+/// This service listens to all Kubernetes node events and will:
+/// - Save all node metadata labels when a node is deleted.
+/// - Restore all node metadata labels when a node is added back to the cluster with the same name.
+/// This service uniquely identifies nodes by name.
+pub struct NodeLabelPersistenceService {
     client: Client,
     namespace: String,
 }
 
-impl NodeStateRestorer {
+impl NodeLabelPersistenceService {
     pub async fn new(namespace: &str) -> Result<Self, kube::Error> {
         let client = Client::try_default().await?;
-        Ok(NodeStateRestorer {
+        Ok(NodeLabelPersistenceService {
             client,
             namespace: namespace.to_string(),
         })
-    }
-
-    /// A convenience debug class method that prints all config map data to console.
-    pub async fn print_all_config_map_data(
-        client: Client,
-        namespace: &str,
-    ) -> Result<(), kube::Error> {
-        let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
-
-        for cm in config_maps.list(&ListParams::default()).await? {
-            println!("ConfigMap: {}", cm.metadata.name.unwrap());
-            if let Some(data) = cm.data {
-                for (key, value) in data {
-                    println!("{}: {}", key, value);
-                }
-            }
-        }
-        Ok(())
     }
 
     /// A convenience class method that returns all labels stored in the ConfigMap for a given node
@@ -120,7 +107,7 @@ impl NodeStateRestorer {
                 match event {
                     Event::Applied(node) => {
                         // This event is triggered when a node is either added or modified.
-                        println!(
+                        debug!(
                             "Node Added/Modified: {:?}, resource_version: {:?}, labels: {:?}",
                             node.metadata.name,
                             node.metadata.resource_version,
@@ -188,7 +175,7 @@ impl NodeStateRestorer {
                                 }
                             }
                             Ok(None) => {
-                                println!("No stored labels found for node: {}", node_name);
+                                debug!("No stored labels found for node: {}", node_name);
                             }
                             Err(e) => {
                                 return Err(watcher::Error::WatchError(ErrorResponse {
@@ -204,7 +191,7 @@ impl NodeStateRestorer {
                         }
                     }
                     Event::Deleted(node) => {
-                        println!(
+                        debug!(
                             "Node Deleted: {:?}, resource_version: {:?}, labels: {:?}",
                             node.metadata.name,
                             node.metadata.resource_version,
@@ -306,9 +293,10 @@ mod tests {
     use kube::{api::Api, Client};
     use rand::distributions::Alphanumeric;
     use rand::{thread_rng, Rng};
+    use tracing_subscriber::prelude::*;
 
     // Local
-    use super::NodeStateRestorer;
+    use super::NodeLabelPersistenceService;
 
     async fn assert_stored_label_has_value(
         node_name: &str,
@@ -316,7 +304,7 @@ mod tests {
         value: &str,
         client: Client,
     ) {
-        let stored_labels = NodeStateRestorer::get_config_map_labels_for_node_name(
+        let stored_labels = NodeLabelPersistenceService::get_config_map_labels_for_node_name(
             node_name,
             client.clone(),
             "default",
@@ -334,38 +322,32 @@ mod tests {
 
     #[tokio::test]
     // TODO: How do I remove the usage of sleeps?
+    /// Test the following scenario:
+    /// 1. Create a node
+    /// 2. Add a label to the node
+    /// 3. Delete the node and assert that the label is stored
+    /// 4. Add the node back to the cluster and assert that the label is restored
     async fn test_add_and_remove_nodes() {
+        let filter = tracing_subscriber::filter::Targets::new()
+            .with_target("kube_state_rs", tracing::Level::DEBUG);
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer())
+            .with(filter)
+            .init();
         let client = Client::try_default().await.unwrap();
-        let test_node_name = "node4";
-        println!(
-            "{}: {:?}",
-            test_node_name,
-            NodeStateRestorer::get_config_map_labels_for_node_name(
-                test_node_name,
-                client.clone(),
-                "default"
-            )
-            .await
-            .unwrap()
-        );
+
+        //
+        // 1. Create a node.
+        //
+        let test_node_name = "node1";
         let nodes: Api<Node> = Api::all(client.clone());
 
-        let node_watcher = NodeStateRestorer::new("default").await.unwrap();
+        let node_watcher = NodeLabelPersistenceService::new("default").await.unwrap();
         tokio::spawn(async move {
             node_watcher.watch_nodes().await.unwrap();
         });
+        // Make sure the Service is watching before proceeding
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-        // TODO: Do this for multiple nodes
-        let node_label_key = "label_to_persist";
-        let node_label_value: String = thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(10)
-            .map(char::from)
-            .collect();
-        println!("The node label should be set to: {}", node_label_value);
-
-        // Add nodes
         let node = Node {
             metadata: ObjectMeta {
                 name: Some(test_node_name.to_string()),
@@ -376,17 +358,25 @@ mod tests {
         let node = nodes.create(&PostParams::default(), &node).await.unwrap();
         assert_eq!(node.metadata.labels, None);
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-        // Check if nodes were added
+        // Check if the node was added
         let node_list = nodes.list(&Default::default()).await.unwrap();
         assert!(node_list
             .items
             .iter()
             .any(|n| n.metadata.name == Some(test_node_name.to_string())));
 
+        //
+        // 2. Add a label to the node
+        //
+        let node_label_key = "label_to_persist";
+        let node_label_value: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(10)
+            .map(char::from)
+            .collect();
         let mut new_labels = BTreeMap::new();
         new_labels.insert(node_label_key.to_string(), node_label_value.clone());
-        NodeStateRestorer::set_node_labels(test_node_name, client.clone(), new_labels)
+        NodeLabelPersistenceService::set_node_labels(test_node_name, client.clone(), new_labels)
             .await
             .unwrap();
         assert_node_label_has_value(
@@ -397,7 +387,9 @@ mod tests {
         )
         .await;
 
-        // Remove node
+        //
+        // 3. Delete the node and assert that the label is stored
+        //
         nodes
             .delete(test_node_name, &Default::default())
             .await
@@ -409,8 +401,18 @@ mod tests {
             .items
             .iter()
             .any(|n| n.metadata.name == Some(test_node_name.to_string())));
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        assert_stored_label_has_value(
+            test_node_name,
+            node_label_key,
+            &node_label_value,
+            client.clone(),
+        )
+        .await;
 
-        // Add back nodes and check that the labels are restored
+        //
+        // 4. Add the node back to the cluster and assert that the label is restored
+        //
         let node = Node {
             metadata: ObjectMeta {
                 name: Some(test_node_name.to_string()),
@@ -436,7 +438,9 @@ mod tests {
         )
         .await;
 
+        //
         // Cleanup
+        //
         nodes
             .delete(test_node_name, &Default::default())
             .await

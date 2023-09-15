@@ -23,7 +23,5 @@ Write a service that will preserve Nodes’ labels if they are deleted from the 
 - We assume a label should be set on a node only if the label is missing. If the label is already set, we do not overwrite it
 
 ### TODO
-- Use tracing crate rather than println
 - Add a second integration test and deal with making sure minikube is in the same state at the start of each test
-- Add docstrings
 - Add a fuzz test with 1000+ nodes
