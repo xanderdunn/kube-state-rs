@@ -9,12 +9,15 @@ use kube::{
         Api, DeleteParams, ListParams, ObjectMeta, PartialObjectMetaExt, Patch, PatchParams,
         PostParams,
     },
-    error::ErrorResponse,
     runtime::{watcher, watcher::Event},
     Client,
 };
 use serde_json::json;
 use tracing::debug;
+
+// Local
+mod utils;
+use utils::generate_error_response;
 
 /// This service listens to all Kubernetes node events and will:
 /// - Save all node metadata labels when a node is deleted.
@@ -138,14 +141,7 @@ impl NodeLabelPersistenceService {
             nodes
                 .patch(node_name, &PatchParams::default(), &Patch::Merge(&patch))
                 .await
-                .map_err(|e| {
-                    watcher::Error::WatchError(ErrorResponse {
-                        status: e.to_string(),
-                        message: format!("Failed to patch node {}: {}", node_name, e),
-                        reason: "Failed to patch node".to_string(),
-                        code: 500,
-                    })
-                })?;
+                .map_err(|e| generate_error_response(Some(e), node_name, "Failed to patch node"))?;
         }
         Ok(())
     }
@@ -172,14 +168,7 @@ impl NodeLabelPersistenceService {
             .create(&Default::default(), &data)
             .await
             .map_err(|e| {
-                // propagate the error
-                let error_response = ErrorResponse {
-                    status: e.to_string(),
-                    message: format!("Failed to create config map for node {}: {}", node_name, e),
-                    reason: "Failed to create config map".to_string(),
-                    code: 500,
-                };
-                watcher::Error::WatchError(error_response)
+                generate_error_response(Some(e), node_name, "Failed to create config map")
             })?;
         Ok(())
     }
@@ -188,18 +177,17 @@ impl NodeLabelPersistenceService {
     async fn update_stored_labels(
         client: Client,
         node_name: &str,
-        node_labels: BTreeMap<String, String>,
+        mut node_labels: BTreeMap<String, String>,
         namespace: &str,
     ) -> Result<(), watcher::Error> {
-        let mut node_labels = node_labels.clone();
-        // Get the exisitng string and increment it by 1
         let label_version = node_labels
             .get("label_version")
-            .unwrap_or(&"0".to_string())
-            .parse::<u32>()
+            .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(0)
             + 1;
+
         node_labels.insert("label_version".to_string(), label_version.to_string());
+
         let data = ConfigMap {
             data: Some(node_labels.clone()),
             metadata: ObjectMeta {
@@ -208,41 +196,25 @@ impl NodeLabelPersistenceService {
             },
             ..Default::default()
         };
+
         let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
-        // If the only label left is the label_version, delete the config map
+
         if node_labels.len() == 1 {
             config_maps
                 .delete(node_name, &DeleteParams::default())
                 .await
                 .map_err(|e| {
-                    let error_response = ErrorResponse {
-                        status: e.to_string(),
-                        message: format!(
-                            "Failed to update config map for node {}: {}",
-                            node_name, e
-                        ),
-                        reason: "Failed to update config map".to_string(),
-                        code: 500,
-                    };
-                    watcher::Error::WatchError(error_response)
+                    generate_error_response(Some(e), node_name, "Failed to update config map")
                 })?;
         } else {
             config_maps
                 .replace(node_name, &PostParams::default(), &data)
                 .await
                 .map_err(|e| {
-                    let error_response = ErrorResponse {
-                        status: e.to_string(),
-                        message: format!(
-                            "Failed to update config map for node {}: {}",
-                            node_name, e
-                        ),
-                        reason: "Failed to update config map".to_string(),
-                        code: 500,
-                    };
-                    watcher::Error::WatchError(error_response)
+                    generate_error_response(Some(e), node_name, "Failed to update config map")
                 })?;
         }
+
         Ok(())
     }
 
@@ -264,12 +236,7 @@ impl NodeLabelPersistenceService {
             if let Some(node_name) = node.metadata.name.clone() {
                 Ok(node_name)
             } else {
-                Err(watcher::Error::WatchError(ErrorResponse {
-                    status: "No Node Name Error".to_string(),
-                    message: "No node name found for the deleted node".to_string(),
-                    reason: "No Node Name".to_string(),
-                    code: 500,
-                }))
+                Err(generate_error_response(None, "", "No node name found"))
             }
         }?;
         match Self::get_config_map_labels(client.clone(), &node_name, namespace).await {
@@ -301,12 +268,11 @@ impl NodeLabelPersistenceService {
                 debug!("No stored labels found for node: {}", node_name);
             }
             Err(e) => {
-                return Err(watcher::Error::WatchError(ErrorResponse {
-                    status: e.to_string(),
-                    message: format!("Failed to get stored labels for node {}: {}", node_name, e),
-                    reason: "Failed to get stored labels".to_string(),
-                    code: 500,
-                }));
+                return Err(generate_error_response(
+                    Some(e),
+                    &node_name,
+                    "Failed to get sotred labels for node",
+                ));
             }
         }
         Ok(())
@@ -347,12 +313,7 @@ impl NodeLabelPersistenceService {
                     }
                 }
             } else {
-                return Err(watcher::Error::WatchError(ErrorResponse {
-                    status: "No Node Name Error".to_string(),
-                    message: "No node name found for the deleted node".to_string(),
-                    reason: "No Node Name".to_string(),
-                    code: 500,
-                }));
+                return Err(generate_error_response(None, "", "No node name found"));
             }
         }
         Ok(())
