@@ -268,7 +268,18 @@ impl NodeLabelPersistenceService {
                             node.metadata.labels
                         );
                         // Get labels we have stored for this node if present
-                        let node_name = node.metadata.name.clone().unwrap_or_default();
+                        let node_name = {
+                            if let Some(node_name) = node.metadata.name.clone() {
+                                Ok(node_name)
+                            } else {
+                                Err(watcher::Error::WatchError(ErrorResponse {
+                                    status: "No Node Name Error".to_string(),
+                                    message: "No node name found for the deleted node".to_string(),
+                                    reason: "No Node Name".to_string(),
+                                    code: 500,
+                                }))
+                            }
+                        }?;
                         match Self::get_config_map_labels_for_node_name(
                             self.client.clone(),
                             &node_name,
@@ -331,32 +342,38 @@ impl NodeLabelPersistenceService {
                             node.metadata.labels
                         );
                         if let Some(node_labels) = &node.metadata.labels {
-                            // TODO: No node name should be an error
-                            let node_name = node.metadata.name.unwrap_or_default();
-
-                            let config_maps: Api<ConfigMap> =
-                                Api::namespaced(self.client.clone(), &self.namespace);
-                            match config_maps.get(&node_name).await {
-                                Ok(_) => {
-                                    // Update the stored labels if they exist for this node
-                                    Self::update_stored_labels(
-                                        self.client.clone(),
-                                        &node_name,
-                                        node_labels.clone(),
-                                        &self.namespace,
-                                    )
-                                    .await?;
+                            if let Some(node_name) = node.metadata.name {
+                                let config_maps: Api<ConfigMap> =
+                                    Api::namespaced(self.client.clone(), &self.namespace);
+                                match config_maps.get(&node_name).await {
+                                    Ok(_) => {
+                                        // Update the stored labels if they exist for this node
+                                        Self::update_stored_labels(
+                                            self.client.clone(),
+                                            &node_name,
+                                            node_labels.clone(),
+                                            &self.namespace,
+                                        )
+                                        .await?;
+                                    }
+                                    Err(_) => {
+                                        // Create the stored labels if they don't exist for this node
+                                        Self::create_stored_labels(
+                                            self.client.clone(),
+                                            &node_name,
+                                            node_labels.clone(),
+                                            &self.namespace,
+                                        )
+                                        .await?;
+                                    }
                                 }
-                                Err(_) => {
-                                    // Create the stored labels if they don't exist for this node
-                                    Self::create_stored_labels(
-                                        self.client.clone(),
-                                        &node_name,
-                                        node_labels.clone(),
-                                        &self.namespace,
-                                    )
-                                    .await?;
-                                }
+                            } else {
+                                return Err(watcher::Error::WatchError(ErrorResponse {
+                                    status: "No Node Name Error".to_string(),
+                                    message: "No node name found for the deleted node".to_string(),
+                                    reason: "No Node Name".to_string(),
+                                    code: 500,
+                                }));
                             }
                         }
                     }
