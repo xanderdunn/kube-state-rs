@@ -575,8 +575,12 @@ mod tests {
     async fn test_deleting_labels() {
         init_tracing();
 
-        // Start our service
+        // Start from a clean slate
         let namespace = "default";
+        let client = Client::try_default().await.unwrap();
+        delete_kube_state(client.clone(), namespace).await.unwrap();
+
+        // Start our service
         let node_watcher = NodeLabelPersistenceService::new(namespace).await.unwrap();
         tokio::spawn(async move {
             node_watcher.watch_nodes().await.unwrap();
@@ -588,8 +592,6 @@ mod tests {
         // 1. Create a node.
         //
         let test_node_name = "node1";
-        let client = Client::try_default().await.unwrap();
-        delete_kube_state(client.clone(), namespace).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         add_node(client.clone(), test_node_name).await.unwrap();
 
@@ -649,6 +651,7 @@ mod tests {
         assert_eq!(config_maps_list.items.len(), 1); // There is always a root certificate ConfigMap
     }
 
+    /// Delete all nodes in the cluster.
     async fn delete_all_nodes(client: Client) -> Result<(), kube::Error> {
         let nodes: Api<Node> = Api::all(client.clone());
         let nodes_list = nodes.list(&ListParams::default()).await?;
@@ -659,7 +662,7 @@ mod tests {
         Ok(())
     }
 
-    /// Delete all nodes and delete all ConfiMap data.
+    /// Delete all nodes and delete all ConfMap data.
     /// Run this between unit tests to start from a clean state.
     async fn delete_kube_state(client: Client, namespace: &str) -> Result<(), kube::Error> {
         delete_all_nodes(client.clone()).await?;
@@ -692,8 +695,13 @@ mod tests {
     async fn fuzz_test() {
         init_tracing();
 
-        // Start our service
+        // Start from a clean slate
         let namespace = "default";
+        let client = Client::try_default().await.unwrap();
+        delete_kube_state(client.clone(), namespace).await.unwrap(); // start with a clean slate
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Start our service
         let node_watcher = NodeLabelPersistenceService::new(namespace).await.unwrap();
         tokio::spawn(async move {
             node_watcher.watch_nodes().await.unwrap();
@@ -705,9 +713,6 @@ mod tests {
         // node_name -> (in_cluster (not deleted), label_key -> label_value)
         let mut truth_node_labels: BTreeMap<String, (bool, BTreeMap<String, String>)> =
             BTreeMap::new();
-        let client = Client::try_default().await.unwrap();
-        delete_kube_state(client.clone(), namespace).await.unwrap(); // start with a clean slate
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let mut rng = rand::thread_rng();
         let seed = rng.gen::<u64>();
         debug!("The seed is {}", seed);
