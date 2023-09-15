@@ -11,7 +11,7 @@ Write a service that will preserve Nodes’ labels if they are deleted from the 
 - `cargo build`
 
 ### Lint
-- ./lint.sh
+- `./lint.sh`
 
 ### Test
 - `cargo test`

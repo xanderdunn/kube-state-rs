@@ -704,7 +704,7 @@ mod tests {
             // Take a random action: Create node, add label to node, delete label from node, change
             // value of label on node, delete node.
             let choice = rng.gen_range(0..10);
-            // Skewed choose, preferring to add rather than delete
+            // Skewed choice, preferring to add rather than delete
             let action = match choice {
                 0 => NodeAction::Create,
                 1 => NodeAction::Create,
