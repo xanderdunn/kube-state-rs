@@ -26,9 +26,9 @@ pub struct NodeLabelPersistenceService {
 }
 
 impl NodeLabelPersistenceService {
-    pub async fn new(namespace: &str, client: Client) -> Result<Self, kube::Error> {
+    pub async fn new(namespace: &str, client: &Client) -> Result<Self, anyhow::Error> {
         Ok(NodeLabelPersistenceService {
-            client,
+            client: client.clone(),
             namespace: namespace.to_string(),
         })
     }
@@ -36,11 +36,11 @@ impl NodeLabelPersistenceService {
     /// A convenience class method that returns all labels stored in the ConfigMap for a given node
     /// name.
     pub async fn get_config_map_labels(
-        client: Client,
+        client: &Client,
         node_name: &str,
         namespace: &str,
-    ) -> Result<Option<BTreeMap<String, String>>, kube::Error> {
-        let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
+    ) -> Result<Option<BTreeMap<String, String>>, anyhow::Error> {
+        let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
 
         for cm in config_maps.list(&ListParams::default()).await? {
             if let Some(name) = cm.metadata.name {
@@ -55,10 +55,10 @@ impl NodeLabelPersistenceService {
 
     /// A convenience class method to get all of the labels on a node.
     pub async fn get_node_labels(
-        client: Client,
+        client: &Client,
         node_name: &str,
-    ) -> Result<Option<BTreeMap<String, String>>, kube::Error> {
-        let nodes: Api<Node> = Api::all(client);
+    ) -> Result<Option<BTreeMap<String, String>>, anyhow::Error> {
+        let nodes: Api<Node> = Api::all(client.clone());
 
         for node in nodes.list(&ListParams::default()).await? {
             if let Some(name) = node.metadata.name {
@@ -73,16 +73,16 @@ impl NodeLabelPersistenceService {
 
     /// A convience class method to set label values on a node.
     pub async fn set_node_labels(
-        client: Client,
+        client: &Client,
         node_name: &str,
-        labels: BTreeMap<String, String>,
-    ) -> Result<(), kube::Error> {
-        let nodes = Api::<Node>::all(client);
+        labels: &BTreeMap<String, String>,
+    ) -> Result<(), anyhow::Error> {
+        let nodes = Api::<Node>::all(client.clone());
 
         let patch_params = PatchParams::apply("node-state-restorer");
 
         let metadata = ObjectMeta {
-            labels: Some(labels),
+            labels: Some(labels.clone()),
             ..Default::default()
         }
         .into_request_partial::<Node>();
@@ -95,11 +95,11 @@ impl NodeLabelPersistenceService {
 
     /// A convenience class method to remove the label on a node.
     pub async fn remove_node_label(
-        client: Client,
+        client: &Client,
         node_name: &str,
-        label_key: String,
-    ) -> Result<(), kube::Error> {
-        let nodes = Api::<Node>::all(client);
+        label_key: &str,
+    ) -> Result<(), anyhow::Error> {
+        let nodes = Api::<Node>::all(client.clone());
 
         let patch_params = PatchParams::apply("node-state-restorer");
 
@@ -119,18 +119,18 @@ impl NodeLabelPersistenceService {
 
     /// Given a set of node labels and stored labels, restore the stored labels on the node.
     pub async fn restore_node_labels(
-        client: Client,
+        client: &Client,
         node_name: &str,
-        node_labels: BTreeMap<String, String>,
-        stored_labels: BTreeMap<String, String>,
+        node_labels: &BTreeMap<String, String>,
+        stored_labels: &BTreeMap<String, String>,
     ) -> Result<(), anyhow::Error> {
         let mut new_labels = node_labels.clone();
 
+        // Add missing keys
         for (key, value) in stored_labels {
-            if !node_labels.contains_key(&key) {
-                new_labels.insert(key, value);
-            }
+            new_labels.entry(key.clone()).or_insert(value.clone());
         }
+
         if new_labels.len() > node_labels.len() {
             let patch = json!({ "metadata": { "labels": new_labels }});
             let nodes: Api<Node> = Api::all(client.clone());
@@ -144,9 +144,9 @@ impl NodeLabelPersistenceService {
 
     /// Given a set of node labels, store them in the ConfigMap for the first time.
     async fn create_stored_labels(
-        client: Client,
+        client: &Client,
         node_name: &str,
-        node_labels: BTreeMap<String, String>,
+        node_labels: &BTreeMap<String, String>,
         namespace: &str,
     ) -> Result<(), anyhow::Error> {
         let mut node_labels = node_labels.clone();
@@ -159,7 +159,7 @@ impl NodeLabelPersistenceService {
             },
             ..Default::default()
         };
-        let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
+        let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
         config_maps
             .create(&Default::default(), &data)
             .await
@@ -171,12 +171,12 @@ impl NodeLabelPersistenceService {
     /// If the node_labels is non-empty, it will replace all labels in the `ConfigMap`
     /// If the node_labels is empty, it will delete the `ConfigMap` for this node.
     async fn update_stored_labels(
-        client: Client,
+        client: &Client,
         node_name: &str,
-        node_labels: BTreeMap<String, String>,
+        node_labels: &BTreeMap<String, String>,
         namespace: &str,
     ) -> Result<(), anyhow::Error> {
-        let mut node_labels = node_labels;
+        let mut node_labels = node_labels.clone();
         let label_version = node_labels
             .get("label_version")
             .and_then(|s| s.parse::<u32>().ok())
@@ -194,7 +194,7 @@ impl NodeLabelPersistenceService {
             ..Default::default()
         };
 
-        let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
+        let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
 
         if node_labels.len() == 1 {
             // Only the label_version key is present
@@ -216,8 +216,8 @@ impl NodeLabelPersistenceService {
     /// When a node is modified, do nothing.
     /// When a node is added, restore any missing labels.
     pub async fn handle_node_applied(
-        client: Client,
-        node: Node,
+        client: &Client,
+        node: &Node,
         namespace: &str,
     ) -> Result<(), anyhow::Error> {
         // This event is triggered when a node is either added or modified.
@@ -233,7 +233,7 @@ impl NodeLabelPersistenceService {
                 Err(anyhow!("No node name found"))
             }
         }?;
-        match Self::get_config_map_labels(client.clone(), &node_name, namespace).await {
+        match Self::get_config_map_labels(client, &node_name, namespace).await {
             Ok(Some(stored_labels)) => {
                 // Proceed only if the node's label_version is lower than the
                 // label_version in stored_labels
@@ -255,8 +255,7 @@ impl NodeLabelPersistenceService {
 
                 // If the node is missing one of these labels, set it on the node
                 let node_labels = node.metadata.labels.clone().unwrap_or_default();
-                Self::restore_node_labels(client.clone(), &node_name, node_labels, stored_labels)
-                    .await?;
+                Self::restore_node_labels(client, &node_name, &node_labels, &stored_labels).await?;
             }
             Ok(None) => {
                 debug!("No stored labels found for node: {}", node_name);
@@ -271,8 +270,8 @@ impl NodeLabelPersistenceService {
     /// Class method to handle a node being deleted.
     /// When a node is deleted, update the stored labels to reflect the current labels on the node.
     pub async fn handle_node_deleted(
-        client: Client,
-        node: Node,
+        client: &Client,
+        node: &Node,
         namespace: &str,
     ) -> Result<(), anyhow::Error> {
         debug!(
@@ -280,28 +279,18 @@ impl NodeLabelPersistenceService {
             node.metadata.name, node.metadata.resource_version, node.metadata.labels
         );
         if let Some(node_labels) = &node.metadata.labels {
-            if let Some(node_name) = node.metadata.name {
+            if let Some(node_name) = node.metadata.name.clone() {
                 let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
                 match config_maps.get(&node_name).await {
                     Ok(_) => {
                         // Update the stored labels if they exist for this node
-                        Self::update_stored_labels(
-                            client.clone(),
-                            &node_name,
-                            node_labels.clone(),
-                            namespace,
-                        )
-                        .await?;
+                        Self::update_stored_labels(client, &node_name, node_labels, namespace)
+                            .await?;
                     }
                     Err(_) => {
                         // Create the stored labels if they don't exist for this node
-                        Self::create_stored_labels(
-                            client.clone(),
-                            &node_name,
-                            node_labels.clone(),
-                            namespace,
-                        )
-                        .await?;
+                        Self::create_stored_labels(client, &node_name, node_labels, namespace)
+                            .await?;
                     }
                 }
             } else {
@@ -325,12 +314,12 @@ impl NodeLabelPersistenceService {
             .try_for_each(|event| async move {
                 match event {
                     Event::Applied(node) => {
-                        Self::handle_node_applied(self.client.clone(), node, &self.namespace)
+                        Self::handle_node_applied(&self.client, &node, &self.namespace)
                             .await
                             .map_err(|e| e.downcast::<watcher::Error>().unwrap())?;
                     }
                     Event::Deleted(node) => {
-                        Self::handle_node_deleted(self.client.clone(), node, &self.namespace)
+                        Self::handle_node_deleted(&self.client, &node, &self.namespace)
                             .await
                             .map_err(|e| e.downcast::<watcher::Error>().unwrap())?;
                     }
@@ -374,13 +363,10 @@ mod tests {
         key: &str,
         value: Option<&String>,
     ) {
-        let stored_labels = NodeLabelPersistenceService::get_config_map_labels(
-            client.clone(),
-            node_name,
-            "default",
-        )
-        .await
-        .unwrap();
+        let stored_labels =
+            NodeLabelPersistenceService::get_config_map_labels(&client, node_name, "default")
+                .await
+                .unwrap();
         assert_eq!(stored_labels.unwrap().get(key), value);
     }
 
@@ -397,7 +383,7 @@ mod tests {
     }
 
     /// A convenience function to create a node by name.
-    async fn add_node(client: Client, node_name: &str) -> Result<(), kube::Error> {
+    async fn add_node(client: Client, node_name: &str) -> Result<(), anyhow::Error> {
         let nodes: Api<Node> = Api::all(client.clone());
 
         let node = Node {
@@ -420,7 +406,7 @@ mod tests {
     }
 
     /// A convenience function to delete a node by name.
-    async fn delete_node(client: Client, node_name: &str) -> Result<(), kube::Error> {
+    async fn delete_node(client: Client, node_name: &str) -> Result<(), anyhow::Error> {
         let nodes: Api<Node> = Api::all(client.clone());
         nodes.delete(node_name, &Default::default()).await?;
         assert!(!nodes
@@ -438,7 +424,7 @@ mod tests {
         client: Client,
         node_name: &str,
         key: &str,
-    ) -> Result<String, kube::Error> {
+    ) -> Result<String, anyhow::Error> {
         let value: String = thread_rng()
             .sample_iter(&Alphanumeric)
             .take(10)
@@ -446,7 +432,7 @@ mod tests {
             .collect();
         let mut new_labels = BTreeMap::new();
         new_labels.insert(key.to_string(), value.clone());
-        NodeLabelPersistenceService::set_node_labels(client.clone(), node_name, new_labels)
+        NodeLabelPersistenceService::set_node_labels(&client, node_name, &new_labels)
             .await
             .unwrap();
         assert_node_label_has_value(client.clone(), node_name, key, Some(&value)).await;
@@ -480,7 +466,7 @@ mod tests {
 
         // Start our service
         let client = Client::try_default().await.unwrap();
-        let node_watcher = NodeLabelPersistenceService::new("default", client.clone())
+        let node_watcher = NodeLabelPersistenceService::new("default", &client)
             .await
             .unwrap();
         tokio::spawn(async move {
@@ -560,7 +546,7 @@ mod tests {
         delete_kube_state(client.clone(), namespace).await.unwrap();
 
         // Start our service
-        let node_watcher = NodeLabelPersistenceService::new(namespace, client.clone())
+        let node_watcher = NodeLabelPersistenceService::new(namespace, &client)
             .await
             .unwrap();
         tokio::spawn(async move {
@@ -605,13 +591,9 @@ mod tests {
         //
         // 5. Delete the label on the node
         //
-        NodeLabelPersistenceService::remove_node_label(
-            client.clone(),
-            test_node_name,
-            node_label_key.to_string(),
-        )
-        .await
-        .unwrap();
+        NodeLabelPersistenceService::remove_node_label(&client, test_node_name, node_label_key)
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         assert_node_label_has_value(client.clone(), test_node_name, node_label_key, None).await;
 
@@ -633,7 +615,7 @@ mod tests {
     }
 
     /// Delete all nodes in the cluster.
-    async fn delete_all_nodes(client: Client) -> Result<(), kube::Error> {
+    async fn delete_all_nodes(client: Client) -> Result<(), anyhow::Error> {
         let nodes: Api<Node> = Api::all(client.clone());
         let nodes_list = nodes.list(&ListParams::default()).await?;
         for node in nodes_list {
@@ -645,7 +627,7 @@ mod tests {
 
     /// Delete all nodes and delete all ConfMap data.
     /// Run this between unit tests to start from a clean state.
-    async fn delete_kube_state(client: Client, namespace: &str) -> Result<(), kube::Error> {
+    async fn delete_kube_state(client: Client, namespace: &str) -> Result<(), anyhow::Error> {
         delete_all_nodes(client.clone()).await?;
 
         let config_maps: Api<k8s_openapi::api::core::v1::ConfigMap> =
@@ -683,7 +665,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // Start our service
-        let node_watcher = NodeLabelPersistenceService::new(namespace, client.clone())
+        let node_watcher = NodeLabelPersistenceService::new(namespace, &client)
             .await
             .unwrap();
         tokio::spawn(async move {
@@ -758,9 +740,7 @@ mod tests {
                                 .insert(node_name.clone(), (in_cluster, labels.clone()));
                             debug!("Action Completed: added label on node {}", node_name);
                             NodeLabelPersistenceService::set_node_labels(
-                                client.clone(),
-                                &node_name,
-                                labels,
+                                &client, &node_name, &labels,
                             )
                             .await
                             .unwrap();
@@ -787,9 +767,7 @@ mod tests {
                                 truth_node_labels
                                     .insert(node_name.clone(), (in_cluster, labels.clone()));
                                 NodeLabelPersistenceService::remove_node_label(
-                                    client.clone(),
-                                    &node_name,
-                                    label_key.to_string(),
+                                    &client, &node_name, &label_key,
                                 )
                                 .await
                                 .unwrap();
@@ -828,9 +806,7 @@ mod tests {
                                     .insert(node_name.clone(), (in_cluster, labels.clone()));
                                 debug!("Action Completed: changed label on node {}", node_name);
                                 NodeLabelPersistenceService::set_node_labels(
-                                    client.clone(),
-                                    &node_name,
-                                    labels,
+                                    &client, &node_name, &labels,
                                 )
                                 .await
                                 .unwrap();
