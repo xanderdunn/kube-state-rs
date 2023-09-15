@@ -25,4 +25,4 @@ Write a service that will preserve Nodes’ labels if they are deleted from the 
 - We assume that all labels on a node when it is deleted are exactly what we want to persist. If there is a label stored in the `ConfigMap` that is no longer on the node when it is deleted, it will be removed from the `ConfigMap`.
 - We assume a label should be set on a node only if the label is missing. If the label is already set, we do not overwrite it.
 - If a `ConfigMap` has no labels left in it, it is deleted.
-- A node label key might contain characters `[-._a-zA-Z0-9\/]+`, which is a superset of the characters allowed in a `ConfigMap` key: `[-._a-zA-Z0-9]+`. For example, the label key `beta.kubernetes.io/os` is not compatible with storage as a key in a `ConfigMap`.
+- A node label key might contain characters `[-._a-zA-Z0-9\/]+`, which is a superset of the characters allowed in a `ConfigMap` key: `[-._a-zA-Z0-9]+`. For example, the label key `beta.kubernetes.io/os` is not compatible with storage as a key in a `ConfigMap`. If this is important, the `/` can be encoded.

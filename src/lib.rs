@@ -76,6 +76,7 @@ impl NodeLabelPersistenceService {
         Ok(())
     }
 
+    /// A convenience class method to remove the label on a node.
     pub async fn remove_node_label(
         client: Client,
         node_name: &str,
@@ -99,6 +100,7 @@ impl NodeLabelPersistenceService {
         Ok(())
     }
 
+    /// A convenience class method to get all of the labels on a node.
     pub async fn get_node_labels(
         client: Client,
         node_name: &str,
