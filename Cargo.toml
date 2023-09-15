@@ -14,3 +14,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.2", features = ["env-filter"] }
 serial_test = "2"
 anyhow = "1.0"
+signal-hook = "0.3"

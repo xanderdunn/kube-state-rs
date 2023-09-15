@@ -11,7 +11,7 @@ use kube::{
     Client,
 };
 use serde_json::json;
-use tracing::debug;
+use tracing::{debug, error, info};
 
 // Local
 pub mod utils;
@@ -305,18 +305,21 @@ impl NodeLabelPersistenceService {
         let nodes: Api<Node> = Api::all(self.client.clone());
         let watcher = watcher(nodes, watcher::Config::default());
 
+        info!("Starting node label watcher...");
         watcher
             .try_for_each(|event| async move {
                 match event {
                     Event::Applied(node) => {
                         Self::handle_node_applied(&self.client, &node, &self.namespace)
                             .await
-                            .map_err(|e| e.downcast::<watcher::Error>().unwrap())?;
+                            .map_err(|e| error!("handle_node_applied failed: {:?}", e))
+                            .ok();
                     }
                     Event::Deleted(node) => {
                         Self::handle_node_deleted(&self.client, &node, &self.namespace)
                             .await
-                            .map_err(|e| e.downcast::<watcher::Error>().unwrap())?;
+                            .map_err(|e| error!("handle_node_deleted failed: {:?}", e))
+                            .ok();
                     }
                     _ => {}
                 }
