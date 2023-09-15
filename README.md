@@ -16,6 +16,35 @@ Write a service that will preserve Nodes’ labels if they are deleted from the 
 ### Test
 - `cargo test`
 
+### Usage
+Here is some example usage of the binary:
+- Run the binary: `cargo run`
+- Create a node: 
+```
+echo '{
+  "apiVersion": "v1",
+  "kind": "Node",
+  "metadata": {
+    "name": "my-new-node"
+  },
+  "spec": {
+    "taints": [
+      {
+        "effect": "NoSchedule",
+        "key": "node.kubernetes.io/unschedulable",
+        "value": "true"
+      }
+    ]
+  }
+}' | kubectl create -f -
+```
+- You'll see the service print debug messages that a node has been added
+- Add a label to the node: `kubectl label nodes my-new-node my_key=my_test_value`
+- Delete the node: `kubectl delete node my-new-node`
+- Print the `ConfigMap` to see that the label was stored: `kubectl get configmap my-new-node -o yaml`
+- Add the node back to the cluster with the same command as above.
+- See that the labels have been restored on the node: `kubectl get nodes my-new-node --show-labels`
+
 ### Assumptions
 - This repo uses a local minikube to run integration tests with `cargo test` both locally for dev and in GitHub Action CI.
 - This service assumes that every node has a `metadata.name`, and it assumes that the name will be a unique identifier.

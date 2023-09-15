@@ -13,6 +13,9 @@ use kube::{
 use serde_json::json;
 use tracing::debug;
 
+// Local
+pub mod utils;
+
 /// Constant key used to store the version of the labels in the ConfigMap.
 const LABEL_VERSION: &str = "label_version";
 
@@ -330,7 +333,6 @@ impl NodeLabelPersistenceService {
 mod tests {
     // System
     use std::collections::BTreeMap;
-    use std::sync::Once;
 
     // Third Party
     use k8s_openapi::api::core::v1::{ConfigMap, Node};
@@ -343,10 +345,9 @@ mod tests {
     use rand::{distributions::Alphanumeric, seq::IteratorRandom, thread_rng, Rng, SeedableRng};
     use serial_test::serial;
     use tracing::debug;
-    use tracing_subscriber::prelude::*;
 
     // Local
-    use super::{NodeLabelPersistenceService, LABEL_VERSION};
+    use super::{utils::init_tracing, NodeLabelPersistenceService, LABEL_VERSION};
 
     /// A convenience function for asserting that the stored value is correct.
     async fn assert_stored_label_has_value(
@@ -430,21 +431,6 @@ mod tests {
             .unwrap();
         assert_node_label_has_value(client.clone(), node_name, key, Some(&value)).await;
         Ok(value)
-    }
-
-    static INIT: Once = Once::new();
-
-    /// Create the global tracing subscriber for tests only once so that multiple tests do not
-    /// conflict.
-    fn init_tracing() {
-        INIT.call_once(|| {
-            let filter = tracing_subscriber::filter::Targets::new()
-                .with_target("kube_state_rs", tracing::Level::DEBUG);
-            tracing_subscriber::registry()
-                .with(tracing_subscriber::fmt::layer())
-                .with(filter)
-                .init();
-        });
     }
 
     #[tokio::test]
