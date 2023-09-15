@@ -6,10 +6,7 @@ use anyhow::anyhow;
 use futures::TryStreamExt;
 use k8s_openapi::api::core::v1::{ConfigMap, Node};
 use kube::{
-    api::{
-        Api, DeleteParams, ListParams, ObjectMeta, PartialObjectMetaExt, Patch, PatchParams,
-        PostParams,
-    },
+    api::{Api, DeleteParams, ObjectMeta, PartialObjectMetaExt, Patch, PatchParams, PostParams},
     runtime::{watcher, watcher::Event},
     Client,
 };
@@ -42,15 +39,10 @@ impl NodeLabelPersistenceService {
     ) -> Result<Option<BTreeMap<String, String>>, anyhow::Error> {
         let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
 
-        for cm in config_maps.list(&ListParams::default()).await? {
-            if let Some(name) = cm.metadata.name {
-                if name == node_name {
-                    return Ok(cm.data);
-                }
-            }
+        match config_maps.get(node_name).await {
+            Ok(config_map) => Ok(config_map.data),
+            Err(_) => Ok(None),
         }
-
-        Ok(None)
     }
 
     /// A convenience class method to get all of the labels on a node.
@@ -60,15 +52,10 @@ impl NodeLabelPersistenceService {
     ) -> Result<Option<BTreeMap<String, String>>, anyhow::Error> {
         let nodes: Api<Node> = Api::all(client.clone());
 
-        for node in nodes.list(&ListParams::default()).await? {
-            if let Some(name) = node.metadata.name {
-                if name == node_name {
-                    return Ok(node.metadata.labels);
-                }
-            }
+        match nodes.get(node_name).await {
+            Ok(node) => Ok(node.metadata.labels),
+            Err(_) => Ok(None),
         }
-
-        Ok(None)
     }
 
     /// A convience class method to set label values on a node.
