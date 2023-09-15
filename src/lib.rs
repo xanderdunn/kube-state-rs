@@ -2,6 +2,7 @@
 use std::collections::BTreeMap;
 
 // Third Party
+use anyhow::anyhow;
 use futures::TryStreamExt;
 use k8s_openapi::api::core::v1::{ConfigMap, Node};
 use kube::{
@@ -14,10 +15,6 @@ use kube::{
 };
 use serde_json::json;
 use tracing::debug;
-
-// Local
-mod utils;
-use utils::generate_error_response;
 
 /// This service listens to all Kubernetes node events and will:
 /// - Save all node metadata labels when a node is deleted.
@@ -126,7 +123,7 @@ impl NodeLabelPersistenceService {
         node_name: &str,
         node_labels: BTreeMap<String, String>,
         stored_labels: BTreeMap<String, String>,
-    ) -> Result<(), watcher::Error> {
+    ) -> Result<(), anyhow::Error> {
         let mut new_labels = node_labels.clone();
 
         for (key, value) in stored_labels {
@@ -140,7 +137,7 @@ impl NodeLabelPersistenceService {
             nodes
                 .patch(node_name, &PatchParams::default(), &Patch::Merge(&patch))
                 .await
-                .map_err(|e| generate_error_response(Some(e), node_name, "Failed to patch node"))?;
+                .map_err(|e| anyhow!(e).context("Failed to patch node"))?;
         }
         Ok(())
     }
@@ -151,7 +148,7 @@ impl NodeLabelPersistenceService {
         node_name: &str,
         node_labels: BTreeMap<String, String>,
         namespace: &str,
-    ) -> Result<(), watcher::Error> {
+    ) -> Result<(), anyhow::Error> {
         let mut node_labels = node_labels.clone();
         node_labels.insert("label_version".to_string(), "1".to_string());
         let data = ConfigMap {
@@ -166,9 +163,7 @@ impl NodeLabelPersistenceService {
         config_maps
             .create(&Default::default(), &data)
             .await
-            .map_err(|e| {
-                generate_error_response(Some(e), node_name, "Failed to create config map")
-            })?;
+            .map_err(|e| anyhow!(e).context("Failed to create config map"))?;
         Ok(())
     }
 
@@ -180,7 +175,7 @@ impl NodeLabelPersistenceService {
         node_name: &str,
         node_labels: BTreeMap<String, String>,
         namespace: &str,
-    ) -> Result<(), watcher::Error> {
+    ) -> Result<(), anyhow::Error> {
         let mut node_labels = node_labels;
         let label_version = node_labels
             .get("label_version")
@@ -206,16 +201,12 @@ impl NodeLabelPersistenceService {
             config_maps
                 .delete(node_name, &DeleteParams::default())
                 .await
-                .map_err(|e| {
-                    generate_error_response(Some(e), node_name, "Failed to update config map")
-                })?;
+                .map_err(|e| anyhow!(e).context("Failed to update config map"))?;
         } else {
             config_maps
                 .replace(node_name, &PostParams::default(), &data)
                 .await
-                .map_err(|e| {
-                    generate_error_response(Some(e), node_name, "Failed to update config map")
-                })?;
+                .map_err(|e| anyhow!(e).context("Failed to update config map"))?;
         }
 
         Ok(())
@@ -228,7 +219,7 @@ impl NodeLabelPersistenceService {
         client: Client,
         node: Node,
         namespace: &str,
-    ) -> Result<(), watcher::Error> {
+    ) -> Result<(), anyhow::Error> {
         // This event is triggered when a node is either added or modified.
         debug!(
             "Node Added/Modified: {:?}, resource_version: {:?}, labels: {:?}",
@@ -239,7 +230,7 @@ impl NodeLabelPersistenceService {
             if let Some(node_name) = node.metadata.name.clone() {
                 Ok(node_name)
             } else {
-                Err(generate_error_response(None, "", "No node name found"))
+                Err(anyhow!("No node name found"))
             }
         }?;
         match Self::get_config_map_labels(client.clone(), &node_name, namespace).await {
@@ -271,11 +262,7 @@ impl NodeLabelPersistenceService {
                 debug!("No stored labels found for node: {}", node_name);
             }
             Err(e) => {
-                return Err(generate_error_response(
-                    Some(e),
-                    &node_name,
-                    "Failed to get sotred labels for node",
-                ));
+                return Err(anyhow!(e).context("Failed to get stored labels"));
             }
         }
         Ok(())
@@ -287,7 +274,7 @@ impl NodeLabelPersistenceService {
         client: Client,
         node: Node,
         namespace: &str,
-    ) -> Result<(), watcher::Error> {
+    ) -> Result<(), anyhow::Error> {
         debug!(
             "Node Deleted: {:?}, resource_version: {:?}, labels: {:?}",
             node.metadata.name, node.metadata.resource_version, node.metadata.labels
@@ -318,7 +305,7 @@ impl NodeLabelPersistenceService {
                     }
                 }
             } else {
-                return Err(generate_error_response(None, "", "No node name found"));
+                return Err(anyhow!("No node name found"));
             }
         }
         Ok(())
@@ -330,7 +317,7 @@ impl NodeLabelPersistenceService {
     /// If the label_version of the node's metadata is greater than or equal to what's stored, nothing will be
     /// restored. This is to prevent restoring labels that are intentionally deleted on a running
     /// node.
-    pub async fn watch_nodes(&self) -> Result<(), watcher::Error> {
+    pub async fn watch_nodes(&self) -> Result<(), anyhow::Error> {
         let nodes: Api<Node> = Api::all(self.client.clone());
         let watcher = watcher(nodes, watcher::Config::default());
 
@@ -339,17 +326,20 @@ impl NodeLabelPersistenceService {
                 match event {
                     Event::Applied(node) => {
                         Self::handle_node_applied(self.client.clone(), node, &self.namespace)
-                            .await?;
+                            .await
+                            .map_err(|e| e.downcast::<watcher::Error>().unwrap())?;
                     }
                     Event::Deleted(node) => {
                         Self::handle_node_deleted(self.client.clone(), node, &self.namespace)
-                            .await?;
+                            .await
+                            .map_err(|e| e.downcast::<watcher::Error>().unwrap())?;
                     }
                     _ => {}
                 }
                 Ok(())
             })
-            .await?;
+            .await
+            .map_err(|e| anyhow!(e))?;
 
         Ok(())
     }
