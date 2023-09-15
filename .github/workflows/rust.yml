@@ -21,15 +21,9 @@ jobs:
       - name: Start minikube
         uses: medyagh/setup-minikube@master
 
-      - name: Try the cluster
-        run: kubectl get pods -A
-
-      - uses: actions-rs/toolchain@v1
-        with:
-          override: true
-          toolchain: stable
-          profile: minimal
-
+      - name: Install rust
+        run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      
       - uses: Swatinem/rust-cache@v2
 
       - name: Lint
