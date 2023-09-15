@@ -13,6 +13,9 @@ use kube::{
 use serde_json::json;
 use tracing::debug;
 
+/// Constant key used to store the version of the labels in the ConfigMap.
+const LABEL_VERSION: &str = "label_version";
+
 /// This service listens to all Kubernetes node events and will:
 /// - Save all node metadata labels when a node is deleted.
 /// - Restore all node metadata labels when a node is added back to the cluster with the same name.
@@ -139,7 +142,7 @@ impl NodeLabelPersistenceService {
         namespace: &str,
     ) -> Result<(), anyhow::Error> {
         let mut node_labels = node_labels.clone();
-        node_labels.insert("label_version".to_string(), "1".to_string());
+        node_labels.insert(LABEL_VERSION.to_string(), "1".to_string());
         let data = ConfigMap {
             data: Some(node_labels),
             metadata: ObjectMeta {
@@ -167,12 +170,12 @@ impl NodeLabelPersistenceService {
     ) -> Result<(), anyhow::Error> {
         let mut node_labels = node_labels.clone();
         let label_version = node_labels
-            .get("label_version")
+            .get(LABEL_VERSION)
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(0)
             + 1;
 
-        node_labels.insert("label_version".to_string(), label_version.to_string());
+        node_labels.insert(LABEL_VERSION.to_string(), label_version.to_string());
 
         let data = ConfigMap {
             data: Some(node_labels.clone()),
@@ -231,9 +234,9 @@ impl NodeLabelPersistenceService {
                     .labels
                     .clone()
                     .unwrap_or_default()
-                    .get("label_version")
+                    .get(LABEL_VERSION)
                 {
-                    if let Some(stored_label_version) = stored_labels.get("label_version") {
+                    if let Some(stored_label_version) = stored_labels.get(LABEL_VERSION) {
                         if stored_label_version.parse::<u64>().unwrap_or(0)
                             <= node_label_version.parse::<u64>().unwrap_or(0)
                         {
@@ -343,7 +346,7 @@ mod tests {
     use tracing_subscriber::prelude::*;
 
     // Local
-    use super::NodeLabelPersistenceService;
+    use super::{NodeLabelPersistenceService, LABEL_VERSION};
 
     /// A convenience function for asserting that the stored value is correct.
     async fn assert_stored_label_has_value(
@@ -1020,7 +1023,7 @@ mod tests {
                 let truth_labels = truth_node_labels.get(&config_map_name).unwrap();
                 if let Some(config_map_labels) = config_map.data {
                     let mut config_map_labels = config_map_labels.clone();
-                    config_map_labels.remove("label_version");
+                    config_map_labels.remove(LABEL_VERSION);
                     assert_eq!(
                         config_map_labels, truth_labels.1,
                         "ConfigMap {} has labels {:?} but truth is expecting {:?}",
