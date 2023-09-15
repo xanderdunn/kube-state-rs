@@ -18,8 +18,6 @@ use tracing::{debug, error, info};
 // Local
 pub mod utils;
 
-/// Constant key used to store the version of the labels in the ConfigMap.
-const LABEL_VERSION: &str = "label_version";
 /// The special tokent reserved to encode `/` in label keys so that they can be stored as ConfigMap
 /// keys.
 const SLASH_TOKEN: &str = "-SLASH-";
@@ -167,7 +165,6 @@ impl NodeLabelPersistenceService {
         namespace: &str,
     ) -> Result<(), anyhow::Error> {
         let mut node_labels = node_labels.clone();
-        node_labels.insert(LABEL_VERSION.to_string(), "1".to_string());
         encode_key_slashes(&mut node_labels);
         let data = ConfigMap {
             data: Some(node_labels),
@@ -186,46 +183,32 @@ impl NodeLabelPersistenceService {
     }
 
     /// Given a set of node labels, update the stored labels in the `ConfigMap`.
-    /// If the node_labels is non-empty, it will replace all labels in the `ConfigMap`
-    /// If the node_labels is empty, it will delete the `ConfigMap` for this node.
+    /// It will replace all labels in the `ConfigMap`
+    /// `node_labels` must be non-empty.
     async fn update_stored_labels(
         client: &Client,
         node_name: &str,
         node_labels: &BTreeMap<String, String>,
         namespace: &str,
     ) -> Result<(), anyhow::Error> {
+        assert!(!node_labels.is_empty());
         let mut node_labels = node_labels.clone();
-        let label_version = node_labels
-            .get(LABEL_VERSION)
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0)
-            + 1;
 
-        node_labels.insert(LABEL_VERSION.to_string(), label_version.to_string());
         let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-
-        if node_labels.len() == 1 {
-            // Only the label_version key is present
-            config_maps
-                .delete(node_name, &DeleteParams::default())
-                .await
-                .map_err(|e| anyhow!(e).context("Failed to update config map"))?;
-        } else {
-            encode_key_slashes(&mut node_labels);
-            let data = ConfigMap {
-                data: Some(node_labels.clone()),
-                metadata: ObjectMeta {
-                    name: Some(node_name.to_string()),
-                    ..Default::default()
-                },
+        encode_key_slashes(&mut node_labels);
+        let data = ConfigMap {
+            data: Some(node_labels.clone()),
+            metadata: ObjectMeta {
+                name: Some(node_name.to_string()),
                 ..Default::default()
-            };
+            },
+            ..Default::default()
+        };
 
-            config_maps
-                .replace(node_name, &PostParams::default(), &data)
-                .await
-                .map_err(|e| anyhow!(e).context("Failed to update config map"))?;
-        }
+        config_maps
+            .replace(node_name, &PostParams::default(), &data)
+            .await
+            .map_err(|e| anyhow!(e).context("Failed to update config map"))?;
 
         Ok(())
     }
@@ -253,24 +236,6 @@ impl NodeLabelPersistenceService {
         }?;
         match Self::get_config_map_labels(client, &node_name, namespace).await {
             Ok(Some(stored_labels)) => {
-                // Proceed only if the node's label_version is lower than the
-                // label_version in stored_labels
-                if let Some(node_label_version) = node
-                    .metadata
-                    .labels
-                    .clone()
-                    .unwrap_or_default()
-                    .get(LABEL_VERSION)
-                {
-                    if let Some(stored_label_version) = stored_labels.get(LABEL_VERSION) {
-                        if stored_label_version.parse::<u64>().unwrap_or(0)
-                            <= node_label_version.parse::<u64>().unwrap_or(0)
-                        {
-                            return Ok(());
-                        }
-                    }
-                }
-
                 // If the node is missing one of these labels, set it on the node
                 let node_labels = node.metadata.labels.clone().unwrap_or_default();
                 Self::restore_node_labels(client, &node_name, &node_labels, &stored_labels).await?;
@@ -296,34 +261,39 @@ impl NodeLabelPersistenceService {
             "Node Deleted: {:?}, resource_version: {:?}, labels: {:?}",
             node.metadata.name, node.metadata.resource_version, node.metadata.labels
         );
-        if let Some(node_labels) = &node.metadata.labels {
+        let node_name: String = {
             if let Some(node_name) = node.metadata.name.clone() {
-                let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-                match config_maps.get(&node_name).await {
-                    Ok(_) => {
-                        // Update the stored labels if they exist for this node
-                        Self::update_stored_labels(client, &node_name, node_labels, namespace)
-                            .await?;
-                    }
-                    Err(_) => {
-                        // Create the stored labels if they don't exist for this node
-                        Self::create_stored_labels(client, &node_name, node_labels, namespace)
-                            .await?;
-                    }
-                }
+                node_name
             } else {
                 return Err(anyhow!("No node name found"));
+            }
+        };
+        let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+        if let Some(node_labels) = &node.metadata.labels {
+            match config_maps.get(&node_name).await {
+                Ok(_) => {
+                    // Update the stored labels if they exist for this node
+                    Self::update_stored_labels(client, &node_name, node_labels, namespace).await?;
+                }
+                Err(_) => {
+                    // Create the stored labels if they don't exist for this node
+                    Self::create_stored_labels(client, &node_name, node_labels, namespace).await?;
+                }
+            }
+        } else {
+            // There are no labels left, so delete the corresponding ConfigMap if it exists
+            if (config_maps.get(&node_name).await).is_ok() {
+                config_maps
+                    .delete(&node_name, &DeleteParams::default())
+                    .await
+                    .map_err(|e| anyhow!(e).context("Failed to update config map"))?;
             }
         }
         Ok(())
     }
 
     /// Start watching all node events and save and restore labels as needed.
-    /// This will save all metadata labels for a node when it is deleted and increment the
-    /// label_version.
-    /// If the label_version of the node's metadata is greater than or equal to what's stored, nothing will be
-    /// restored. This is to prevent restoring labels that are intentionally deleted on a running
-    /// node.
+    /// This will save all metadata labels for a node when it is deleted.
     pub async fn watch_nodes(&self) -> Result<(), anyhow::Error> {
         let nodes: Api<Node> = Api::all(self.client.clone());
 
@@ -369,7 +339,7 @@ mod tests {
     use tracing::debug;
 
     // Local
-    use super::{utils::init_tracing, NodeLabelPersistenceService, LABEL_VERSION, SLASH_TOKEN};
+    use super::{utils::init_tracing, NodeLabelPersistenceService, SLASH_TOKEN};
 
     /// A convenience function for asserting that the stored value is correct.
     async fn assert_stored_label_has_value(
@@ -554,9 +524,12 @@ mod tests {
     async fn test_not_overwriting_labels() {
         init_tracing();
 
-        // Start our service
+        let namespace = "default";
         let client = Client::try_default().await.unwrap();
-        let node_watcher = NodeLabelPersistenceService::new("default", &client)
+        delete_kube_state(client.clone(), namespace).await.unwrap();
+
+        // Start our service
+        let node_watcher = NodeLabelPersistenceService::new(namespace, &client)
             .await
             .unwrap();
         tokio::spawn(async move {
@@ -729,14 +702,18 @@ mod tests {
         .await
         .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        assert_node_label_has_value(client.clone(), test_node_name, node_label_key, None).await;
+        // The node should now have no labels
+        let nodes: Api<Node> = Api::all(client.clone());
+        assert_eq!(
+            nodes.get(test_node_name).await.unwrap().metadata.labels,
+            None
+        );
 
         //
         // 6. Delete the node so that the labels are stored
         //
         delete_node(client.clone(), test_node_name).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        //assert_stored_label_has_value(test_node_name, node_label_key, None, client.clone()).await;
 
         let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
         let config_maps_list = config_maps.list(&ListParams::default()).await.unwrap();
@@ -1036,8 +1013,6 @@ mod tests {
             if config_map_name != "kube-root-ca.crt" {
                 let truth_labels = truth_node_labels.get(&config_map_name).unwrap();
                 if let Some(config_map_labels) = config_map.data {
-                    let mut config_map_labels = config_map_labels.clone();
-                    config_map_labels.remove(LABEL_VERSION);
                     assert_eq!(
                         config_map_labels, truth_labels.1,
                         "ConfigMap {} has labels {:?} but truth is expecting {:?}",
