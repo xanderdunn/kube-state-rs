@@ -29,8 +29,7 @@ pub struct NodeLabelPersistenceService {
 }
 
 impl NodeLabelPersistenceService {
-    pub async fn new(namespace: &str) -> Result<Self, kube::Error> {
-        let client = Client::try_default().await?;
+    pub async fn new(namespace: &str, client: Client) -> Result<Self, kube::Error> {
         Ok(NodeLabelPersistenceService {
             client,
             namespace: namespace.to_string(),
@@ -173,13 +172,16 @@ impl NodeLabelPersistenceService {
         Ok(())
     }
 
-    /// Given a set of node labels, update the stored labels in the ConfigMap.
+    /// Given a set of node labels, update the stored labels in the `ConfigMap`.
+    /// If the node_labels is non-empty, it will replace all labels in the `ConfigMap`
+    /// If the node_labels is empty, it will delete the `ConfigMap` for this node.
     async fn update_stored_labels(
         client: Client,
         node_name: &str,
-        mut node_labels: BTreeMap<String, String>,
+        node_labels: BTreeMap<String, String>,
         namespace: &str,
     ) -> Result<(), watcher::Error> {
+        let mut node_labels = node_labels;
         let label_version = node_labels
             .get("label_version")
             .and_then(|s| s.parse::<u32>().ok())
@@ -200,6 +202,7 @@ impl NodeLabelPersistenceService {
         let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
 
         if node_labels.len() == 1 {
+            // Only the label_version key is present
             config_maps
                 .delete(node_name, &DeleteParams::default())
                 .await
@@ -278,6 +281,8 @@ impl NodeLabelPersistenceService {
         Ok(())
     }
 
+    /// Class method to handle a node being deleted.
+    /// When a node is deleted, update the stored labels to reflect the current labels on the node.
     pub async fn handle_node_deleted(
         client: Client,
         node: Node,
@@ -484,7 +489,10 @@ mod tests {
         init_tracing();
 
         // Start our service
-        let node_watcher = NodeLabelPersistenceService::new("default").await.unwrap();
+        let client = Client::try_default().await.unwrap();
+        let node_watcher = NodeLabelPersistenceService::new("default", client.clone())
+            .await
+            .unwrap();
         tokio::spawn(async move {
             node_watcher.watch_nodes().await.unwrap();
         });
@@ -495,7 +503,6 @@ mod tests {
         // 1. Create a node.
         //
         let test_node_name = "node1";
-        let client = Client::try_default().await.unwrap();
         add_node(client.clone(), test_node_name).await.unwrap();
 
         //
@@ -563,7 +570,9 @@ mod tests {
         delete_kube_state(client.clone(), namespace).await.unwrap();
 
         // Start our service
-        let node_watcher = NodeLabelPersistenceService::new(namespace).await.unwrap();
+        let node_watcher = NodeLabelPersistenceService::new(namespace, client.clone())
+            .await
+            .unwrap();
         tokio::spawn(async move {
             node_watcher.watch_nodes().await.unwrap();
         });
@@ -684,7 +693,9 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // Start our service
-        let node_watcher = NodeLabelPersistenceService::new(namespace).await.unwrap();
+        let node_watcher = NodeLabelPersistenceService::new(namespace, client.clone())
+            .await
+            .unwrap();
         tokio::spawn(async move {
             node_watcher.watch_nodes().await.unwrap();
         });
@@ -692,7 +703,8 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         let num_steps = 50;
-        // node_name -> (in_cluster (not deleted), label_key -> label_value)
+        // node_name -> (in_cluster, label_key -> label_value)
+        // A node is `in_cluster` if it is not deleted
         let mut truth_node_labels: BTreeMap<String, (bool, BTreeMap<String, String>)> =
             BTreeMap::new();
         let mut rng = rand::thread_rng();
