@@ -23,5 +23,7 @@ Write a service that will preserve Nodes’ labels if they are deleted from the 
 - We assume a label should be set on a node only if the label is missing. If the label is already set, we do not overwrite it
 
 ### TODO
+- Remove a label, assert that it is not added back, and then delete it and assert that the label is removed from the stored labels
+- Assert that the label_version increments on deletion even if no labels are changed
 - Add a second integration test and deal with making sure minikube is in the same state at the start of each test
 - Add a fuzz test with 1000+ nodes

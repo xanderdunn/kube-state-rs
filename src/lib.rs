@@ -91,13 +91,114 @@ impl NodeLabelPersistenceService {
         Ok(None)
     }
 
+    /// Given a set of node labels and stored labels, restore the stored labels on the node.
+    pub async fn restore_node_labels(
+        client: Client,
+        node_name: &str,
+        node_labels: BTreeMap<String, String>,
+        stored_labels: BTreeMap<String, String>,
+    ) -> Result<(), watcher::Error> {
+        let mut new_labels = node_labels.clone();
+
+        for (key, value) in stored_labels {
+            if !node_labels.contains_key(&key) {
+                new_labels.insert(key, value);
+            }
+        }
+        if new_labels.len() > node_labels.len() {
+            let patch = json!({ "metadata": { "labels": new_labels }});
+            let nodes: Api<Node> = Api::all(client.clone());
+            nodes
+                .patch(node_name, &PatchParams::default(), &Patch::Merge(&patch))
+                .await
+                .map_err(|e| {
+                    watcher::Error::WatchError(ErrorResponse {
+                        status: e.to_string(),
+                        message: format!("Failed to patch node {}: {}", node_name, e),
+                        reason: "Failed to patch node".to_string(),
+                        code: 500,
+                    })
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Given a set of node labels, store them in the ConfigMap for the first time.
+    async fn create_stored_labels(
+        client: Client,
+        node_name: &str,
+        node_labels: BTreeMap<String, String>,
+        namespace: &str,
+    ) -> Result<(), watcher::Error> {
+        let mut node_labels = node_labels.clone();
+        node_labels.insert("label_version".to_string(), "1".to_string());
+        let data = ConfigMap {
+            data: Some(node_labels),
+            metadata: ObjectMeta {
+                name: Some(node_name.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
+        config_maps
+            .create(&Default::default(), &data)
+            .await
+            .map_err(|e| {
+                // propagate the error
+                let error_response = ErrorResponse {
+                    status: e.to_string(),
+                    message: format!("Failed to create config map for node {}: {}", node_name, e),
+                    reason: "Failed to create config map".to_string(),
+                    code: 500,
+                };
+                watcher::Error::WatchError(error_response)
+            })?;
+        Ok(())
+    }
+
+    /// Given a set of node labels, update the stored labels in the ConfigMap.
+    async fn update_stored_labels(
+        client: Client,
+        node_name: &str,
+        node_labels: BTreeMap<String, String>,
+        namespace: &str,
+    ) -> Result<(), watcher::Error> {
+        let mut node_labels = node_labels.clone();
+        // Get the exisitng string and increment it by 1
+        let label_version = node_labels
+            .get("label_version")
+            .unwrap_or(&"0".to_string())
+            .parse::<u32>()
+            .unwrap_or(0)
+            + 1;
+        node_labels.insert("label_version".to_string(), label_version.to_string());
+        let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
+        config_maps
+            .patch(
+                node_name,
+                &PatchParams::default(),
+                &Patch::Merge(&json!({ "data": node_labels })),
+            )
+            .await
+            .map_err(|e| {
+                let error_response = ErrorResponse {
+                    status: e.to_string(),
+                    message: format!("Failed to update config map for node {}: {}", node_name, e),
+                    reason: "Failed to update config map".to_string(),
+                    code: 500,
+                };
+                watcher::Error::WatchError(error_response)
+            })?;
+        Ok(())
+    }
+
     /// Start watching all node events and save and restore labels as needed.
     /// This will save all metadata labels for a node when it is deleted and increment the
     /// label_version.
     /// If the label_version of the node's metadata is greater than or equal to what's stored, nothing will be
     /// restored. This is to prevent restoring labels that are intentionally deleted on a running
     /// node.
-    // TODO: Simplify this method
     pub async fn watch_nodes(&self) -> Result<(), watcher::Error> {
         let nodes: Api<Node> = Api::all(self.client.clone());
         let watcher = watcher(nodes, watcher::Config::default());
@@ -142,37 +243,16 @@ impl NodeLabelPersistenceService {
                                         }
                                     }
                                 }
+
                                 // If the node is missing one of these labels, set it on the node
                                 let node_labels = node.metadata.labels.clone().unwrap_or_default();
-                                let mut new_labels = node_labels.clone();
-
-                                for (key, value) in stored_labels {
-                                    if !node_labels.contains_key(&key) {
-                                        new_labels.insert(key, value);
-                                    }
-                                }
-                                if new_labels.len() > node_labels.len() {
-                                    let patch = json!({ "metadata": { "labels": new_labels }});
-                                    let nodes: Api<Node> = Api::all(self.client.clone());
-                                    nodes
-                                        .patch(
-                                            &node_name,
-                                            &PatchParams::default(),
-                                            &Patch::Merge(&patch),
-                                        )
-                                        .await
-                                        .map_err(|e| {
-                                            watcher::Error::WatchError(ErrorResponse {
-                                                status: e.to_string(),
-                                                message: format!(
-                                                    "Failed to patch node {}: {}",
-                                                    node_name, e
-                                                ),
-                                                reason: "Failed to patch node".to_string(),
-                                                code: 500,
-                                            })
-                                        })?;
-                                }
+                                Self::restore_node_labels(
+                                    self.client.clone(),
+                                    &node_name,
+                                    node_labels,
+                                    stored_labels,
+                                )
+                                .await?;
                             }
                             Ok(None) => {
                                 debug!("No stored labels found for node: {}", node_name);
@@ -197,76 +277,32 @@ impl NodeLabelPersistenceService {
                             node.metadata.resource_version,
                             node.metadata.labels
                         );
-                        let config_maps: Api<ConfigMap> =
-                            Api::namespaced(self.client.clone(), &self.namespace);
                         if let Some(node_labels) = &node.metadata.labels {
                             // TODO: No node name should be an error
                             let node_name = node.metadata.name.unwrap_or_default();
 
+                            let config_maps: Api<ConfigMap> =
+                                Api::namespaced(self.client.clone(), &self.namespace);
                             match config_maps.get(&node_name).await {
                                 Ok(_) => {
                                     // Update the stored labels if they exist for this node
-                                    let mut node_labels = node_labels.clone();
-                                    // Get the exisitng string and increment it by 1
-                                    let label_version = node_labels
-                                        .get("label_version")
-                                        .unwrap_or(&"0".to_string())
-                                        .parse::<u32>()
-                                        .unwrap_or(0)
-                                        + 1;
-                                    node_labels.insert(
-                                        "label_version".to_string(),
-                                        label_version.to_string(),
-                                    );
-                                    config_maps
-                                        .patch(
-                                            &node_name,
-                                            &PatchParams::default(),
-                                            &Patch::Merge(&json!({ "data": node_labels })),
-                                        )
-                                        .await
-                                        .map_err(|e| {
-                                            let error_response = ErrorResponse {
-                                                status: e.to_string(),
-                                                message: format!(
-                                                    "Failed to update config map for node {}: {}",
-                                                    node_name, e
-                                                ),
-                                                reason: "Failed to update config map".to_string(),
-                                                code: 500,
-                                            };
-                                            watcher::Error::WatchError(error_response)
-                                        })?;
+                                    Self::update_stored_labels(
+                                        self.client.clone(),
+                                        &node_name,
+                                        node_labels.clone(),
+                                        &self.namespace,
+                                    )
+                                    .await?;
                                 }
                                 Err(_) => {
                                     // Create the stored labels if they don't exist for this node
-                                    let mut node_labels = node_labels.clone();
-                                    node_labels
-                                        .insert("label_version".to_string(), "1".to_string());
-                                    let data = ConfigMap {
-                                        data: Some(node_labels),
-                                        metadata: ObjectMeta {
-                                            name: Some(node_name.clone()),
-                                            ..Default::default()
-                                        },
-                                        ..Default::default()
-                                    };
-                                    config_maps
-                                        .create(&Default::default(), &data)
-                                        .await
-                                        .map_err(|e| {
-                                            // propagate the error
-                                            let error_response = ErrorResponse {
-                                                status: e.to_string(),
-                                                message: format!(
-                                                    "Failed to create config map for node {}: {}",
-                                                    node_name, e
-                                                ),
-                                                reason: "Failed to create config map".to_string(),
-                                                code: 500,
-                                            };
-                                            watcher::Error::WatchError(error_response)
-                                        })?;
+                                    Self::create_stored_labels(
+                                        self.client.clone(),
+                                        &node_name,
+                                        node_labels.clone(),
+                                        &self.namespace,
+                                    )
+                                    .await?;
                                 }
                             }
                         }
@@ -339,7 +375,7 @@ mod tests {
         //
         // 1. Create a node.
         //
-        let test_node_name = "node1";
+        let test_node_name = "node2";
         let nodes: Api<Node> = Api::all(client.clone());
 
         let node_watcher = NodeLabelPersistenceService::new("default").await.unwrap();
