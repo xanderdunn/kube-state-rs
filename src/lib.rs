@@ -36,7 +36,7 @@ impl NodeLabelPersistenceService {
 
     /// A convenience class method that returns all labels stored in the ConfigMap for a given node
     /// name.
-    pub async fn get_config_map_labels_for_node_name(
+    pub async fn get_config_map_labels(
         client: Client,
         node_name: &str,
         namespace: &str,
@@ -47,6 +47,24 @@ impl NodeLabelPersistenceService {
             if let Some(name) = cm.metadata.name {
                 if name == node_name {
                     return Ok(cm.data);
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// A convenience class method to get all of the labels on a node.
+    pub async fn get_node_labels(
+        client: Client,
+        node_name: &str,
+    ) -> Result<Option<BTreeMap<String, String>>, kube::Error> {
+        let nodes: Api<Node> = Api::all(client);
+
+        for node in nodes.list(&ListParams::default()).await? {
+            if let Some(name) = node.metadata.name {
+                if name == node_name {
+                    return Ok(node.metadata.labels);
                 }
             }
         }
@@ -98,24 +116,6 @@ impl NodeLabelPersistenceService {
             .patch(node_name, &patch_params, &Patch::Merge(patch))
             .await?;
         Ok(())
-    }
-
-    /// A convenience class method to get all of the labels on a node.
-    pub async fn get_node_labels(
-        client: Client,
-        node_name: &str,
-    ) -> Result<Option<BTreeMap<String, String>>, kube::Error> {
-        let nodes: Api<Node> = Api::all(client);
-
-        for node in nodes.list(&ListParams::default()).await? {
-            if let Some(name) = node.metadata.name {
-                if name == node_name {
-                    return Ok(node.metadata.labels);
-                }
-            }
-        }
-
-        Ok(None)
     }
 
     /// Given a set of node labels and stored labels, restore the stored labels on the node.
@@ -272,8 +272,7 @@ impl NodeLabelPersistenceService {
                 }))
             }
         }?;
-        match Self::get_config_map_labels_for_node_name(client.clone(), &node_name, namespace).await
-        {
+        match Self::get_config_map_labels(client.clone(), &node_name, namespace).await {
             Ok(Some(stored_labels)) => {
                 // Proceed only if the node's label_version is lower than the
                 // label_version in stored_labels
@@ -419,7 +418,7 @@ mod tests {
         key: &str,
         value: Option<&String>,
     ) {
-        let stored_labels = NodeLabelPersistenceService::get_config_map_labels_for_node_name(
+        let stored_labels = NodeLabelPersistenceService::get_config_map_labels(
             client.clone(),
             node_name,
             "default",
