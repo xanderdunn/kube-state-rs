@@ -525,6 +525,121 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    /// Test the following scenario:
+    /// 1. Create a node
+    /// 2. Add a label to the node
+    /// 3. Delete the node and assert that the label is stored
+    /// 4. Add the node back to the cluster with a different label already set. Assert that the new
+    ///    lable is not overwritten.
+    /// 5. Delete the node and see that the new label is stored.
+    /// This test is to make sure that we do not overwrite newer labels on nodes even when they are
+    /// added back.
+    async fn test_not_overwriting_labels() {
+        init_tracing();
+
+        // Start our service
+        let client = Client::try_default().await.unwrap();
+        let node_watcher = NodeLabelPersistenceService::new("default", &client)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            node_watcher.watch_nodes().await.unwrap();
+        });
+        // Make sure the Service is watching before proceeding
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        //
+        // 1. Create a node.
+        //
+        let test_node_name = "node1";
+        add_node(client.clone(), test_node_name).await.unwrap();
+
+        //
+        // 2. Add a label to the node
+        //
+        let node_label_key = "label_to_persist";
+        let node_label_value = set_random_label(
+            client.clone(),
+            test_node_name,
+            node_label_key,
+            "node-label-service",
+        )
+        .await
+        .unwrap();
+
+        //
+        // 3. Delete the node and assert that the label is stored
+        //
+        delete_node(client.clone(), test_node_name).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_stored_label_has_value(
+            client.clone(),
+            test_node_name,
+            node_label_key,
+            Some(&node_label_value),
+        )
+        .await;
+
+        //
+        // 4. Add the node back to the cluster with a different label already set. Assert that the new
+        //    lable is not overwritten.
+        //
+        let new_label_value = "asdfasdf";
+        let nodes: Api<Node> = Api::all(client.clone());
+        let node = Node {
+            metadata: ObjectMeta {
+                name: Some(test_node_name.to_string()),
+                labels: Some(
+                    vec![(node_label_key.to_string(), new_label_value.to_string())]
+                        .into_iter()
+                        .collect(),
+                ),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        nodes.create(&PostParams::default(), &node).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // Check if the node was added
+        let node_list = nodes.list(&Default::default()).await.unwrap();
+        assert!(node_list
+            .items
+            .iter()
+            .any(|n| n.metadata.name == Some(test_node_name.to_string())));
+
+        // Now the stored label value and the node label value are not the same.
+        assert_stored_label_has_value(
+            client.clone(),
+            test_node_name,
+            node_label_key,
+            Some(&node_label_value),
+        )
+        .await;
+        // Assert that the node has the new label
+        assert_node_label_has_value(
+            client.clone(),
+            test_node_name,
+            node_label_key,
+            Some(&new_label_value.to_string()),
+        )
+        .await;
+
+        //
+        // 5. Delete the node and see that the new label is stored.
+        //
+        delete_node(client.clone(), test_node_name).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_stored_label_has_value(
+            client.clone(),
+            test_node_name,
+            node_label_key,
+            Some(&new_label_value.to_string()),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[serial]
     /// 1. Create a node
     /// 2. Add a label to the node.
     /// 3. Delete the node so that the state is stored
