@@ -21,9 +21,8 @@ Write a service that will preserve Nodes’ labels if they are deleted from the 
 - There's no mechanism here for deleting stored node metadata, so it will endlessly accumulate in the ConfigMap. We will eventually want some way of deleting old data.
 - We assume that all labels on a node when it is deleted are exactly what we want. So, if there is a label stored in the ConfigMap for a particular node that is no longer on the node, it will be removed from the ConfigMap.
 - We assume a label should be set on a node only if the label is missing. If the label is already set, we do not overwrite it
+- We create a `ConfigMap` for each node.
 
 ### TODO
-- Remove a label, assert that it is not added back, and then delete it and assert that the label is removed from the stored labels
 - Assert that the label_version increments on deletion even if no labels are changed
-- Add a second integration test and deal with making sure minikube is in the same state at the start of each test
 - Add a fuzz test with 1000+ nodes

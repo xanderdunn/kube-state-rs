@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use futures::TryStreamExt;
 use k8s_openapi::api::core::v1::{ConfigMap, Node};
 use kube::{
-    api::{Api, ListParams, ObjectMeta, PartialObjectMetaExt, Patch, PatchParams},
+    api::{Api, ListParams, ObjectMeta, PartialObjectMetaExt, Patch, PatchParams, PostParams},
     error::ErrorResponse,
     runtime::{watcher, watcher::Event},
     Client,
@@ -196,13 +196,17 @@ impl NodeLabelPersistenceService {
             .unwrap_or(0)
             + 1;
         node_labels.insert("label_version".to_string(), label_version.to_string());
+        let data = ConfigMap {
+            data: Some(node_labels),
+            metadata: ObjectMeta {
+                name: Some(node_name.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
         config_maps
-            .patch(
-                node_name,
-                &PatchParams::default(),
-                &Patch::Merge(&json!({ "data": node_labels })),
-            )
+            .replace(node_name, &PostParams::default(), &data)
             .await
             .map_err(|e| {
                 let error_response = ErrorResponse {
@@ -377,10 +381,15 @@ mod tests {
     }
 
     /// A convenience function for asserting that the node's label value is correct.
-    async fn assert_node_label_has_value(node_name: &str, key: &str, value: &str, client: Client) {
+    async fn assert_node_label_has_value(
+        node_name: &str,
+        key: &str,
+        value: Option<&String>,
+        client: Client,
+    ) {
         let nodes: Api<Node> = Api::all(client.clone());
         let node = nodes.get(node_name).await.unwrap();
-        assert_eq!(node.metadata.labels.unwrap()[key], value.to_string());
+        assert_eq!(node.metadata.labels.unwrap().get(key), value);
     }
 
     /// A convenience function to create a node by name.
@@ -436,7 +445,7 @@ mod tests {
         NodeLabelPersistenceService::set_node_labels(node_name, client.clone(), new_labels)
             .await
             .unwrap();
-        assert_node_label_has_value(node_name, key, &value, client.clone()).await;
+        assert_node_label_has_value(node_name, key, Some(&value), client.clone()).await;
         Ok(value)
     }
 
@@ -516,7 +525,7 @@ mod tests {
         assert_node_label_has_value(
             test_node_name,
             node_label_key,
-            &node_label_value,
+            Some(&node_label_value),
             client.clone(),
         )
         .await;
@@ -534,8 +543,8 @@ mod tests {
     /// 3. Delete the node so that the state is stored
     /// 4. Add the node back to the cluster
     /// 5. Delete the label on the node
-    /// 6. Delete the node so that the labels are stored
-    /// 7. Assert that the label is not in the stored state
+    /// 6. Delete the node so that the labels are stored and assert that deleted label is not in
+    ///    the store.
     async fn test_deleting_labels() {
         init_tracing();
 
@@ -591,25 +600,13 @@ mod tests {
         .await
         .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_node_label_has_value(test_node_name, node_label_key, None, client.clone()).await;
 
         //
         // 6. Delete the node so that the labels are stored
         //
         delete_node(client.clone(), test_node_name).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        println!(
-            "{:?}",
-            NodeLabelPersistenceService::get_config_map_labels_for_node_name(
-                test_node_name,
-                client.clone(),
-                "default"
-            )
-            .await
-            .unwrap()
-        );
-        //assert_stored_label_has_value(test_node_name, node_label_key, None, client.clone()).await;
-
-        // Cleanup
-        //delete_node(client, test_node_name).await.unwrap();
+        assert_stored_label_has_value(test_node_name, node_label_key, None, client.clone()).await;
     }
 }
