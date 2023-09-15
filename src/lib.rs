@@ -18,6 +18,24 @@ pub mod utils;
 
 /// Constant key used to store the version of the labels in the ConfigMap.
 const LABEL_VERSION: &str = "label_version";
+/// The special tokent reserved to encode `/` in label keys so that they can be stored as ConfigMap
+/// keys.
+const SLASH_TOKEN: &str = "-SLASH-";
+
+/// As a workaround for Kubernetes ConfigMap key restrictions, we replace all forward slashes in
+/// keys with SLASH_TOKEN. This function encodes all keys in a given map.
+fn encode_key_slashes(node_labels: &mut BTreeMap<String, String>) {
+    node_labels
+        .keys()
+        .cloned()
+        .collect::<Vec<String>>()
+        .into_iter()
+        .for_each(|key| {
+            if let Some(value) = node_labels.remove(&key) {
+                node_labels.insert(key.replace('/', SLASH_TOKEN), value);
+            }
+        });
+}
 
 /// This service listens to all Kubernetes node events and will:
 /// - Save all node metadata labels when a node is deleted.
@@ -123,7 +141,9 @@ impl NodeLabelPersistenceService {
 
         // Add missing keys
         for (key, value) in stored_labels {
-            new_labels.entry(key.clone()).or_insert(value.clone());
+            new_labels
+                .entry(key.clone().replace(SLASH_TOKEN, "/")) // Decode keys with slashes
+                .or_insert(value.clone());
         }
 
         if new_labels.len() > node_labels.len() {
@@ -146,6 +166,7 @@ impl NodeLabelPersistenceService {
     ) -> Result<(), anyhow::Error> {
         let mut node_labels = node_labels.clone();
         node_labels.insert(LABEL_VERSION.to_string(), "1".to_string());
+        encode_key_slashes(&mut node_labels);
         let data = ConfigMap {
             data: Some(node_labels),
             metadata: ObjectMeta {
@@ -179,16 +200,6 @@ impl NodeLabelPersistenceService {
             + 1;
 
         node_labels.insert(LABEL_VERSION.to_string(), label_version.to_string());
-
-        let data = ConfigMap {
-            data: Some(node_labels.clone()),
-            metadata: ObjectMeta {
-                name: Some(node_name.to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
         let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
 
         if node_labels.len() == 1 {
@@ -198,6 +209,16 @@ impl NodeLabelPersistenceService {
                 .await
                 .map_err(|e| anyhow!(e).context("Failed to update config map"))?;
         } else {
+            encode_key_slashes(&mut node_labels);
+            let data = ConfigMap {
+                data: Some(node_labels.clone()),
+                metadata: ObjectMeta {
+                    name: Some(node_name.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+
             config_maps
                 .replace(node_name, &PostParams::default(), &data)
                 .await
@@ -350,7 +371,7 @@ mod tests {
     use tracing::debug;
 
     // Local
-    use super::{utils::init_tracing, NodeLabelPersistenceService, LABEL_VERSION};
+    use super::{utils::init_tracing, NodeLabelPersistenceService, LABEL_VERSION, SLASH_TOKEN};
 
     /// A convenience function for asserting that the stored value is correct.
     async fn assert_stored_label_has_value(
@@ -363,7 +384,10 @@ mod tests {
             NodeLabelPersistenceService::get_config_map_labels(&client, node_name, "default")
                 .await
                 .unwrap();
-        assert_eq!(stored_labels.unwrap().get(key), value);
+        assert_eq!(
+            stored_labels.unwrap().get(&key.replace('/', SLASH_TOKEN)),
+            value
+        );
     }
 
     /// A convenience function for asserting that the node's label value is correct.
@@ -448,6 +472,9 @@ mod tests {
 
         // Start our service
         let client = Client::try_default().await.unwrap();
+        let namespace = "default";
+        delete_kube_state(client.clone(), namespace).await.unwrap();
+
         let node_watcher = NodeLabelPersistenceService::new("default", &client)
             .await
             .unwrap();
@@ -466,7 +493,7 @@ mod tests {
         //
         // 2. Add a label to the node
         //
-        let node_label_key = "label_to_persist";
+        let node_label_key = "label.to.persist.com/test_slash";
         let node_label_value = set_random_label(
             client.clone(),
             test_node_name,
