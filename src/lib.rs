@@ -63,10 +63,11 @@ impl NodeLabelPersistenceService {
         client: &Client,
         node_name: &str,
         labels: &BTreeMap<String, String>,
+        service_name: &str,
     ) -> Result<(), anyhow::Error> {
         let nodes = Api::<Node>::all(client.clone());
 
-        let patch_params = PatchParams::apply("node-state-restorer");
+        let patch_params = PatchParams::apply(service_name);
 
         let metadata = ObjectMeta {
             labels: Some(labels.clone()),
@@ -85,10 +86,11 @@ impl NodeLabelPersistenceService {
         client: &Client,
         node_name: &str,
         label_key: &str,
+        service_name: &str,
     ) -> Result<(), anyhow::Error> {
         let nodes = Api::<Node>::all(client.clone());
 
-        let patch_params = PatchParams::apply("node-state-restorer");
+        let patch_params = PatchParams::apply(service_name);
 
         let patch = json!({
             "metadata": {
@@ -411,6 +413,7 @@ mod tests {
         client: Client,
         node_name: &str,
         key: &str,
+        service_name: &str,
     ) -> Result<String, anyhow::Error> {
         let value: String = thread_rng()
             .sample_iter(&Alphanumeric)
@@ -419,7 +422,7 @@ mod tests {
             .collect();
         let mut new_labels = BTreeMap::new();
         new_labels.insert(key.to_string(), value.clone());
-        NodeLabelPersistenceService::set_node_labels(&client, node_name, &new_labels)
+        NodeLabelPersistenceService::set_node_labels(&client, node_name, &new_labels, service_name)
             .await
             .unwrap();
         assert_node_label_has_value(client.clone(), node_name, key, Some(&value)).await;
@@ -472,9 +475,14 @@ mod tests {
         // 2. Add a label to the node
         //
         let node_label_key = "label_to_persist";
-        let node_label_value = set_random_label(client.clone(), test_node_name, node_label_key)
-            .await
-            .unwrap();
+        let node_label_value = set_random_label(
+            client.clone(),
+            test_node_name,
+            node_label_key,
+            "node-label-service",
+        )
+        .await
+        .unwrap();
 
         //
         // 3. Delete the node and assert that the label is stored
@@ -529,6 +537,7 @@ mod tests {
 
         // Start from a clean slate
         let namespace = "default";
+        let service_name = "node-label-service";
         let client = Client::try_default().await.unwrap();
         delete_kube_state(client.clone(), namespace).await.unwrap();
 
@@ -553,9 +562,10 @@ mod tests {
         // 2. Add a label to the node
         //
         let node_label_key = "label_to_persist";
-        let node_label_value = set_random_label(client.clone(), test_node_name, node_label_key)
-            .await
-            .unwrap();
+        let node_label_value =
+            set_random_label(client.clone(), test_node_name, node_label_key, service_name)
+                .await
+                .unwrap();
 
         //
         // 3. Delete the node and assert that the label is stored
@@ -578,9 +588,14 @@ mod tests {
         //
         // 5. Delete the label on the node
         //
-        NodeLabelPersistenceService::remove_node_label(&client, test_node_name, node_label_key)
-            .await
-            .unwrap();
+        NodeLabelPersistenceService::remove_node_label(
+            &client,
+            test_node_name,
+            node_label_key,
+            service_name,
+        )
+        .await
+        .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         assert_node_label_has_value(client.clone(), test_node_name, node_label_key, None).await;
 
@@ -647,6 +662,7 @@ mod tests {
 
         // Start from a clean slate
         let namespace = "default";
+        let service_name = "node-label-service";
         let client = Client::try_default().await.unwrap();
         delete_kube_state(client.clone(), namespace).await.unwrap(); // start with a clean slate
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -727,7 +743,10 @@ mod tests {
                                 .insert(node_name.clone(), (in_cluster, labels.clone()));
                             debug!("Action Completed: added label on node {}", node_name);
                             NodeLabelPersistenceService::set_node_labels(
-                                &client, &node_name, &labels,
+                                &client,
+                                &node_name,
+                                &labels,
+                                service_name,
                             )
                             .await
                             .unwrap();
@@ -754,7 +773,10 @@ mod tests {
                                 truth_node_labels
                                     .insert(node_name.clone(), (in_cluster, labels.clone()));
                                 NodeLabelPersistenceService::remove_node_label(
-                                    &client, &node_name, &label_key,
+                                    &client,
+                                    &node_name,
+                                    &label_key,
+                                    service_name,
                                 )
                                 .await
                                 .unwrap();
@@ -793,7 +815,10 @@ mod tests {
                                     .insert(node_name.clone(), (in_cluster, labels.clone()));
                                 debug!("Action Completed: changed label on node {}", node_name);
                                 NodeLabelPersistenceService::set_node_labels(
-                                    &client, &node_name, &labels,
+                                    &client,
+                                    &node_name,
+                                    &labels,
+                                    service_name,
                                 )
                                 .await
                                 .unwrap();
