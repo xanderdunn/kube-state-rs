@@ -22,27 +22,6 @@ pub mod utils;
 /// keys.
 const SLASH_TOKEN: &str = "-SLASH-";
 
-/// As a workaround for Kubernetes ConfigMap key restrictions, we replace all forward slashes in
-/// keys with SLASH_TOKEN.
-/// This function either encodes or decodes all keys in a given map.
-fn change_key_slashes(node_labels: &mut BTreeMap<String, String>, encode: bool) {
-    let (from, to) = if encode {
-        ("/", SLASH_TOKEN)
-    } else {
-        (SLASH_TOKEN, "/")
-    };
-    node_labels
-        .keys()
-        .cloned()
-        .collect::<Vec<String>>()
-        .into_iter()
-        .for_each(|key| {
-            if let Some(value) = node_labels.remove(&key) {
-                node_labels.insert(key.replace(from, to), value);
-            }
-        });
-}
-
 /// This service listens to all Kubernetes node events and will:
 /// - Save all node metadata labels when a node is deleted.
 /// - Restore all node metadata labels when a node is added back to the cluster with the same name.
@@ -60,6 +39,27 @@ impl NodeLabelPersistenceService {
         })
     }
 
+    /// As a workaround for Kubernetes ConfigMap key restrictions, we replace all forward slashes in
+    /// keys with SLASH_TOKEN.
+    /// This function either encodes or decodes all keys in a given map.
+    fn code_key_slashes(node_labels: &mut BTreeMap<String, String>, encode: bool) {
+        let (from, to) = if encode {
+            ("/", SLASH_TOKEN)
+        } else {
+            (SLASH_TOKEN, "/")
+        };
+        node_labels
+            .keys()
+            .cloned()
+            .collect::<Vec<String>>()
+            .into_iter()
+            .for_each(|key| {
+                if let Some(value) = node_labels.remove(&key) {
+                    node_labels.insert(key.replace(from, to), value);
+                }
+            });
+    }
+
     /// A convenience class method that returns all labels stored in the ConfigMap for a given node
     /// name.
     pub async fn get_config_map_labels(
@@ -73,7 +73,7 @@ impl NodeLabelPersistenceService {
             Ok(config_map) => match config_map.data {
                 Some(config_map_data) => {
                     let mut config_map_data = config_map_data.clone();
-                    change_key_slashes(&mut config_map_data, false);
+                    Self::code_key_slashes(&mut config_map_data, false);
                     Ok(Some(config_map_data))
                 }
                 None => Ok(None),
@@ -144,7 +144,7 @@ impl NodeLabelPersistenceService {
     }
 
     /// Given a set of node labels and stored labels, restore the stored labels on the node.
-    pub async fn restore_node_labels(
+    async fn restore_node_labels(
         client: &Client,
         node_name: &str,
         node_labels: &BTreeMap<String, String>,
@@ -178,7 +178,7 @@ impl NodeLabelPersistenceService {
         namespace: &str,
     ) -> Result<(), anyhow::Error> {
         let mut node_labels = node_labels.clone();
-        change_key_slashes(&mut node_labels, true);
+        Self::code_key_slashes(&mut node_labels, true);
         let data = ConfigMap {
             data: Some(node_labels),
             metadata: ObjectMeta {
@@ -208,7 +208,7 @@ impl NodeLabelPersistenceService {
         let mut node_labels = node_labels.clone();
 
         let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-        change_key_slashes(&mut node_labels, true);
+        Self::code_key_slashes(&mut node_labels, true);
         let data = ConfigMap {
             data: Some(node_labels.clone()),
             metadata: ObjectMeta {
@@ -229,7 +229,7 @@ impl NodeLabelPersistenceService {
     /// Class method to handle a node being added or modified.
     /// When a node is modified, do nothing.
     /// When a node is added, restore any missing labels.
-    pub async fn handle_node_applied(
+    async fn handle_node_applied(
         client: &Client,
         node: &Node,
         namespace: &str,
@@ -265,7 +265,7 @@ impl NodeLabelPersistenceService {
 
     /// Class method to handle a node being deleted.
     /// When a node is deleted, update the stored labels to reflect the current labels on the node.
-    pub async fn handle_node_deleted(
+    async fn handle_node_deleted(
         client: &Client,
         node: &Node,
         namespace: &str,
