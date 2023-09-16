@@ -23,8 +23,14 @@ pub mod utils;
 const SLASH_TOKEN: &str = "-SLASH-";
 
 /// As a workaround for Kubernetes ConfigMap key restrictions, we replace all forward slashes in
-/// keys with SLASH_TOKEN. This function encodes all keys in a given map.
-fn encode_key_slashes(node_labels: &mut BTreeMap<String, String>) {
+/// keys with SLASH_TOKEN.
+/// This function either encodes or decodes all keys in a given map.
+fn change_key_slashes(node_labels: &mut BTreeMap<String, String>, encode: bool) {
+    let (from, to) = if encode {
+        ("/", SLASH_TOKEN)
+    } else {
+        (SLASH_TOKEN, "/")
+    };
     node_labels
         .keys()
         .cloned()
@@ -32,7 +38,7 @@ fn encode_key_slashes(node_labels: &mut BTreeMap<String, String>) {
         .into_iter()
         .for_each(|key| {
             if let Some(value) = node_labels.remove(&key) {
-                node_labels.insert(key.replace('/', SLASH_TOKEN), value);
+                node_labels.insert(key.replace(from, to), value);
             }
         });
 }
@@ -64,7 +70,14 @@ impl NodeLabelPersistenceService {
         let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
 
         match config_maps.get(node_name).await {
-            Ok(config_map) => Ok(config_map.data),
+            Ok(config_map) => match config_map.data {
+                Some(config_map_data) => {
+                    let mut config_map_data = config_map_data.clone();
+                    change_key_slashes(&mut config_map_data, false);
+                    Ok(Some(config_map_data))
+                }
+                None => Ok(None),
+            },
             Err(_) => Ok(None),
         }
     }
@@ -165,7 +178,7 @@ impl NodeLabelPersistenceService {
         namespace: &str,
     ) -> Result<(), anyhow::Error> {
         let mut node_labels = node_labels.clone();
-        encode_key_slashes(&mut node_labels);
+        change_key_slashes(&mut node_labels, true);
         let data = ConfigMap {
             data: Some(node_labels),
             metadata: ObjectMeta {
@@ -195,7 +208,7 @@ impl NodeLabelPersistenceService {
         let mut node_labels = node_labels.clone();
 
         let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-        encode_key_slashes(&mut node_labels);
+        change_key_slashes(&mut node_labels, true);
         let data = ConfigMap {
             data: Some(node_labels.clone()),
             metadata: ObjectMeta {
@@ -339,7 +352,7 @@ mod tests {
     use tracing::debug;
 
     // Local
-    use super::{utils::init_tracing, NodeLabelPersistenceService, SLASH_TOKEN};
+    use super::{utils::init_tracing, NodeLabelPersistenceService};
 
     /// A convenience function for asserting that the stored value is correct.
     async fn assert_stored_label_has_value(
@@ -352,10 +365,7 @@ mod tests {
             NodeLabelPersistenceService::get_config_map_labels(&client, node_name, "default")
                 .await
                 .unwrap();
-        assert_eq!(
-            stored_labels.unwrap().get(&key.replace('/', SLASH_TOKEN)),
-            value
-        );
+        assert_eq!(stored_labels.unwrap().get(key), value);
     }
 
     /// A convenience function for asserting that the node's label value is correct.
