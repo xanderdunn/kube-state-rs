@@ -35,3 +35,6 @@ jobs:
       - name: Test
         run: |
           cargo test --verbose --all-targets
+
+      - name: Release Build
+        run: cargo build --release
