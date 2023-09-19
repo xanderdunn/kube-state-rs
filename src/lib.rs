@@ -18,7 +18,7 @@ use tracing::{debug, error, info};
 // Local
 pub mod utils;
 
-/// The special tokent reserved to encode `/` in label keys so that they can be stored as ConfigMap
+/// The special token reserved to encode `/` in label keys so that they can be stored as ConfigMap
 /// keys.
 const SLASH_TOKEN: &str = "-SLASH-";
 
@@ -95,7 +95,7 @@ impl NodeLabelPersistenceService {
         }
     }
 
-    /// A convience class method to set label values on a node.
+    /// A convenience class method to set label values on a node.
     pub async fn set_node_labels(
         client: &Client,
         node_name: &str,
@@ -527,7 +527,7 @@ mod tests {
     /// 2. Add a label to the node
     /// 3. Delete the node and assert that the label is stored
     /// 4. Add the node back to the cluster with a different label already set. Assert that the new
-    ///    lable is not overwritten.
+    ///    label is not overwritten.
     /// 5. Delete the node and see that the new label is stored.
     /// This test is to make sure that we do not overwrite newer labels on nodes even when they are
     /// added back.
@@ -582,7 +582,7 @@ mod tests {
 
         //
         // 4. Add the node back to the cluster with a different label already set. Assert that the new
-        //    lable is not overwritten.
+        //    label is not overwritten.
         //
         let new_label_value = "asdfasdf";
         let nodes: Api<Node> = Api::all(client.clone());
