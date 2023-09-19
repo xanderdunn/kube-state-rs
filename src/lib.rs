@@ -584,7 +584,7 @@ mod tests {
         // 4. Add the node back to the cluster with a different label already set. Assert that the new
         //    label is not overwritten.
         //
-        let new_label_value = "asdfasdf";
+        let new_label_value = "test_label_value";
         let nodes: Api<Node> = Api::all(client.clone());
         let node = Node {
             metadata: ObjectMeta {
@@ -995,7 +995,7 @@ mod tests {
         delete_all_nodes(client.clone()).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        // Iterate through the configmaps and assert that the values are correct
+        // Iterate through the ConfigMaps and assert that the values are correct
         let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
         let config_maps_list = config_maps.list(&ListParams::default()).await.unwrap();
         let num_config_maps = config_maps_list.items.len();
