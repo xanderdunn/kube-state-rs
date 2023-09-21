@@ -1,25 +1,11 @@
 // Third Party
-use futures::future::BoxFuture;
 use kube::Client;
-use tracing::error;
 
 // Local
 use kube_state_rs::{
     utils::{init_tracing, setup_exit_hooks},
     NodeLabelPersistenceService,
 };
-
-// If the watch service fails, this is a last ditch effort to restart it.
-fn watch(
-    node_watcher: NodeLabelPersistenceService,
-) -> BoxFuture<'static, Result<(), anyhow::Error>> {
-    Box::pin(async move {
-        while let Err(e) = node_watcher.watch_nodes().await {
-            error!("Error watching nodes: {}", e);
-        }
-        watch(node_watcher).await
-    })
-}
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
@@ -30,6 +16,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let node_watcher = NodeLabelPersistenceService::new("default", &client)
         .await
         .unwrap();
-    watch(node_watcher).await.unwrap();
+    // We prefer to crash on error so that the k8s controller can restart the pod
+    node_watcher.watch_nodes().await.unwrap();
     Ok(())
 }

@@ -452,21 +452,23 @@ mod tests {
         let client = Client::try_default().await.unwrap();
         let namespace = "default";
         delete_kube_state(client.clone(), namespace).await.unwrap();
+        println!("here1");
 
-        let node_watcher = NodeLabelPersistenceService::new("default", &client)
-            .await
-            .unwrap();
-        tokio::spawn(async move {
-            node_watcher.watch_nodes().await.unwrap();
-        });
+        //let node_watcher = NodeLabelPersistenceService::new("default", &client)
+        //.await
+        //.unwrap();
+        //tokio::spawn(async move {
+        //node_watcher.watch_nodes().await.unwrap();
+        //});
         // Make sure the Service is watching before proceeding
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        //tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         //
         // 1. Create a node.
         //
         let test_node_name = "node1";
         add_node(client.clone(), test_node_name).await.unwrap();
+        println!("here2");
 
         //
         // 2. Add a label to the node
@@ -480,11 +482,13 @@ mod tests {
         )
         .await
         .unwrap();
+        println!("here3");
 
         //
         // 3. Delete the node and assert that the label is stored
         //
         delete_node(client.clone(), test_node_name).await.unwrap();
+        println!("here4");
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         assert_stored_label_has_value(
             client.clone(),
@@ -493,6 +497,7 @@ mod tests {
             Some(&node_label_value),
         )
         .await;
+        println!("here5");
 
         //
         // 4. Add the node back to the cluster and assert that the label is restored
@@ -539,12 +544,12 @@ mod tests {
         delete_kube_state(client.clone(), namespace).await.unwrap();
 
         // Start our service
-        let node_watcher = NodeLabelPersistenceService::new(namespace, &client)
-            .await
-            .unwrap();
-        tokio::spawn(async move {
-            node_watcher.watch_nodes().await.unwrap();
-        });
+        //let node_watcher = NodeLabelPersistenceService::new(namespace, &client)
+        //.await
+        //.unwrap();
+        //tokio::spawn(async move {
+        //node_watcher.watch_nodes().await.unwrap();
+        //});
         // Make sure the Service is watching before proceeding
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -657,12 +662,12 @@ mod tests {
         delete_kube_state(client.clone(), namespace).await.unwrap();
 
         // Start our service
-        let node_watcher = NodeLabelPersistenceService::new(namespace, &client)
-            .await
-            .unwrap();
-        tokio::spawn(async move {
-            node_watcher.watch_nodes().await.unwrap();
-        });
+        //let node_watcher = NodeLabelPersistenceService::new(namespace, &client)
+        //.await
+        //.unwrap();
+        //tokio::spawn(async move {
+        //node_watcher.watch_nodes().await.unwrap();
+        //});
         // Make sure the Service is watching before proceeding
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -741,7 +746,9 @@ mod tests {
         let nodes_list = nodes.list(&ListParams::default()).await?;
         for node in nodes_list {
             let node_name = node.metadata.name.unwrap();
-            delete_node(client.clone(), &node_name).await?;
+            if node_name != "minikube" {
+                delete_node(client.clone(), &node_name).await?;
+            }
         }
         Ok(())
     }
@@ -787,12 +794,12 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // Start our service
-        let node_watcher = NodeLabelPersistenceService::new(namespace, &client)
-            .await
-            .unwrap();
-        tokio::spawn(async move {
-            node_watcher.watch_nodes().await.unwrap();
-        });
+        //let node_watcher = NodeLabelPersistenceService::new(namespace, &client)
+        //.await
+        //.unwrap();
+        //tokio::spawn(async move {
+        //node_watcher.watch_nodes().await.unwrap();
+        //});
         // Make sure the Service is watching before proceeding
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -973,9 +980,13 @@ mod tests {
         for node in nodes_list.items.clone().into_iter() {
             debug!("Node in cluster: {:?}", node.metadata.name.unwrap());
         }
-        assert_eq!(num_nodes, num_truth_nodes_in_cluster);
+        // Subtract 1 because we expect 1 minikube node in the test cluster
+        assert_eq!(num_nodes - 1, num_truth_nodes_in_cluster);
         // Iterate through the nodes and assert that their labels are correct
-        for node in nodes_list {
+        for node in nodes_list
+            .into_iter()
+            .filter(|n| n.metadata.name != Some("minikube".to_string()))
+        {
             let node_name = node.metadata.name.unwrap();
             let truth_labels = truth_node_labels.get(&node_name).unwrap();
             if let Some(node_labels) = node.metadata.labels {

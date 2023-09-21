@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-state-rs-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-state-rs-combined-role
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "patch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-state-rs-combined-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-state-rs-combined-role
+subjects:
+- kind: ServiceAccount
+  name: kube-state-rs-sa
+  namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-rs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kube-state-rs
+  template:
+    metadata:
+      labels:
+        app: kube-state-rs
+    spec:
+      serviceAccountName: kube-state-rs-sa
+      containers:
+        - name: kube-state-rs
+          image: kube-state-rs
+          imagePullPolicy: IfNotPresent

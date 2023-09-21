@@ -53,5 +53,29 @@ echo '{
 - We assume a label should be set on a node only if the label is missing. If the label is already set, we do not overwrite it.
 - If a `ConfigMap` has no labels left in it, it is deleted. However, there is no mechanism implemented for deleting old, non-empty `ConfigMap` data, for example when a node is deleted forever and will not be re-entering the cluster. Hence, the `ConfigMap`s will accumulate. We will eventually want some way of deleting old data.
 - A node label key might contain characters `[-._a-zA-Z0-9\/]+`, which is a superset of the characters allowed in a `ConfigMap` key: `[-._a-zA-Z0-9]+`. For example, the label key `beta.kubernetes.io/os` is not compatible with storage as a key in a `ConfigMap`. As a workaround, we encode all slashes as the reserved token `-SLASH-` when stored as keys in the `ConfigMap` and then decode those tokens into `/` when restoring labels.
-- To run this service in production, let's assume it will run as an Ubuntu service. For this we need a binary that starts a Kubernetes client from a particular Kubernetes config. In this binary we do not exit on error, we log the error and proceed. As a result, we will want to set up logging to some service such as DataDog and notify on error.
+- We run this service as a Docker containerized pod with multiple replicas.
 - Assume up to 100,000 nodes in a cluster.
+- Assume that our nodes have synchronized clocks.
+- Assume that we have our nodes distributed across data centers, regions, zones, geographical areas, etc.
+- We want 99.9% liveness. Losing a label change is to be avoided with high certainty.
+- A delay of several minutes in restoring latest labels to a node should be unlikely but is not a big problem.
+- We aren't dealing with security concerns at this level of the stack.
+
+### Fault Tolerance
+- Crash: The service crashes. We have many replicas with leader election, so when one crashes another will take over. In addition, we have automatic restart.
+- Transient: A particular node fails long enough that our leader election times out, and then returns to working. In this case we avoid duplicated work by checking an incrementing counter stored in the ConfigMap.
+- Permanent: In this case some other replica will eventually be chosen. Ideally a liveness and readiness check would fail and Kubernetes would replace this node.
+- Hardware: A node's hardware dies. Leader election should find another node to continue operation.
+- Network: If a node experiences a network failure, a new leader will eventually be chosen.
+- Response: Imagine a situation where etcd returns stale data on a particular node. We iterate through our nodes ever few minutes and make sure 
+
+### TODO
+- Implement Kubernetes leader election
+- Increase replicas > 1
+- Store labels on every change rather than on node deletion
+- Check that all nodes have the latest data every N minutes
+- Add logging - what output is used? DataDog?
+- Add metrics - what output is used? DataDog?
+    - An interesting metric would be (# of nodes we think have latest labels) / (total # of nodes)
+    - Imagine something is continuously setting the labels to old values. Some metric to understand churn would be useful.
+- Add Kubernetes liveness and readiness check with restart
