@@ -71,10 +71,12 @@ echo '{
 - Response: Imagine a situation where etcd returns stale data on a particular node. We iterate through our nodes ever few minutes and make sure 
 
 ### TODO
-- Convert the execution paradigm to continuous node iteration rather than event watching
+- Fix test scenarios
+- Run node iteration at most every N seconds
 - Split the iteration of nodes across `num_replicas`
 - Make the node iteration parallel across number of cores on a given replica
 - Increase `num_replicas` > 1
+- Namespace the ConfigMap names. They all start with `label_storage.`
 - Handle the situation where `num_replicas` > `num_nodes`
 - Add logging - what output is used? DataDog?
 - Add metrics - what output is used? DataDog?
