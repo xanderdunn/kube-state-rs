@@ -454,15 +454,6 @@ mod tests {
         delete_kube_state(client.clone(), namespace).await.unwrap();
         println!("here1");
 
-        //let node_watcher = NodeLabelPersistenceService::new("default", &client)
-        //.await
-        //.unwrap();
-        //tokio::spawn(async move {
-        //node_watcher.watch_nodes().await.unwrap();
-        //});
-        // Make sure the Service is watching before proceeding
-        //tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
         //
         // 1. Create a node.
         //
@@ -542,16 +533,6 @@ mod tests {
         let namespace = "default";
         let client = Client::try_default().await.unwrap();
         delete_kube_state(client.clone(), namespace).await.unwrap();
-
-        // Start our service
-        //let node_watcher = NodeLabelPersistenceService::new(namespace, &client)
-        //.await
-        //.unwrap();
-        //tokio::spawn(async move {
-        //node_watcher.watch_nodes().await.unwrap();
-        //});
-        // Make sure the Service is watching before proceeding
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         //
         // 1. Create a node.
@@ -660,16 +641,6 @@ mod tests {
         let service_name = "node-label-service";
         let client = Client::try_default().await.unwrap();
         delete_kube_state(client.clone(), namespace).await.unwrap();
-
-        // Start our service
-        //let node_watcher = NodeLabelPersistenceService::new(namespace, &client)
-        //.await
-        //.unwrap();
-        //tokio::spawn(async move {
-        //node_watcher.watch_nodes().await.unwrap();
-        //});
-        // Make sure the Service is watching before proceeding
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         //
         // 1. Create a node.
@@ -791,16 +762,6 @@ mod tests {
         let service_name = "node-label-service";
         let client = Client::try_default().await.unwrap();
         delete_kube_state(client.clone(), namespace).await.unwrap(); // start with a clean slate
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        // Start our service
-        //let node_watcher = NodeLabelPersistenceService::new(namespace, &client)
-        //.await
-        //.unwrap();
-        //tokio::spawn(async move {
-        //node_watcher.watch_nodes().await.unwrap();
-        //});
-        // Make sure the Service is watching before proceeding
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         let num_steps = 50;

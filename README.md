@@ -16,7 +16,7 @@ Write a service that will preserve Nodes’ labels if they are deleted from the 
 ### Test
 - `cargo test`
 
-### Usage
+### Example Local Dev Usage
 Here is some example usage of the binary:
 - Run the binary: `cargo run`
 - Create a node: 
@@ -60,6 +60,7 @@ echo '{
 - We want 99.9% liveness. Losing a label change is to be avoided with high certainty.
 - A delay of several minutes in restoring latest labels to a node should be unlikely but is not a big problem.
 - We aren't dealing with security concerns at this level of the stack.
+- We expect strong consistency from Kubernetes, ConfigMaps, and etcd. When you read a ConfigMap after writing to it, you can expect to get the value you wrote. We expect Kubernetes `POST`, `PUT`, and `DELETE` are atomic. The etcd datastore ensures that these operations either fully succeed or fully fail, maintaining consistency.
 
 ### Fault Tolerance
 - Crash: The service crashes. We have many replicas with leader election, so when one crashes another will take over. In addition, we have automatic restart.
@@ -70,10 +71,11 @@ echo '{
 - Response: Imagine a situation where etcd returns stale data on a particular node. We iterate through our nodes ever few minutes and make sure 
 
 ### TODO
-- Implement Kubernetes leader election
-- Increase replicas > 1
-- Store labels on every change rather than on node deletion
-- Check that all nodes have the latest data every N minutes
+- Convert the execution paradigm to continuous node iteration rather than event watching
+- Split the iteration of nodes across `num_replicas`
+- Make the node iteration parallel across number of cores on a given replica
+- Increase `num_replicas` > 1
+- Handle the situation where `num_replicas` > `num_nodes`
 - Add logging - what output is used? DataDog?
 - Add metrics - what output is used? DataDog?
     - An interesting metric would be (# of nodes we think have latest labels) / (total # of nodes)
