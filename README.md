@@ -3,6 +3,9 @@ Within a Kubernetes cluster, nodes are often added/deleted as they undergo maint
 
 Write a service that will preserve Nodes’ labels if they are deleted from the cluster and re-apply them if they enter back into the cluster. This service itself should be stateless, but can use Kubernetes for any state storage.
 
+### Architecture Overview
+We have two processes, one responsible for storing node metadata, and one responsible for setting node metadata on nodes. Each process iterates over the nodes in the cluster in a loop, looking for changes to either store or set on nodes. Liveness is achieved by running both processes as Kubernetes pod services with `N` replicas. Each replica is responsible for `1/N` of the nodes in the cluster. Consistency is eventual, we can expect a short delay between a node entering a cluster and the metadata being set on the node. Similarly, we can expect a short delay between someone modifying the metadata on a node and our service storing the updated metadata. The delay is dependent on the number of replicas `N` and the number of nodes in the cluster, but is generally expected to be sub-minute.
+
 ### Setup
 - Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - [Install minikube](https://minikube.sigs.k8s.io/docs/start/)
@@ -61,6 +64,7 @@ echo '{
 - A delay of several minutes in restoring latest labels to a node should be unlikely but is not a big problem.
 - We aren't dealing with security concerns at this level of the stack.
 - We expect strong consistency from Kubernetes, ConfigMaps, and etcd. When you read a ConfigMap after writing to it, you can expect to get the value you wrote. We expect Kubernetes `POST`, `PUT`, and `DELETE` are atomic. The etcd datastore ensures that these operations either fully succeed or fully fail, maintaining consistency.
+- If a change to node metadata is made seconds before the node is deleted, the change can be lost. We assume this is acceptable. If label modifications moments before deletion are expected to happen in production, an alternate implementation will be required.
 
 ### Fault Tolerance
 - Crash: The service crashes. We have many replicas with leader election, so when one crashes another will take over. In addition, we have automatic restart.
@@ -71,12 +75,12 @@ echo '{
 - Response: Imagine a situation where etcd returns stale data on a particular node. We iterate through our nodes ever few minutes and make sure 
 
 ### TODO
-- Fix test scenarios
-- Run node iteration at most every N seconds
+- Fix test_not_overwriting_labels
 - Split the iteration of nodes across `num_replicas`
 - Make the node iteration parallel across number of cores on a given replica
 - Increase `num_replicas` > 1
-- Namespace the ConfigMap names. They all start with `label_storage.`
+- Split the storage and restoring into two separate processes
+- Namespace the ConfigMap names. They could all start with `label_storage.`
 - Handle the situation where `num_replicas` > `num_nodes`
 - Add logging - what output is used? DataDog?
 - Add metrics - what output is used? DataDog?

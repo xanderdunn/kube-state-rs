@@ -990,7 +990,7 @@ mod tests {
         //
         // 3. Assert that the label is stored
         //
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         assert_stored_label_has_value(
             client.clone(),
             test_node_name,
@@ -1004,7 +1004,7 @@ mod tests {
         //
         delete_node(client.clone(), test_node_name).await.unwrap();
         add_node(client.clone(), test_node_name).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         assert_stored_label_has_value(
             client.clone(),
             test_node_name,
@@ -1019,11 +1019,6 @@ mod tests {
             Some(&node_label_value),
         )
         .await;
-
-        //
-        // Cleanup
-        //
-        delete_node(client.clone(), test_node_name).await.unwrap();
     }
 
     // TODO: Fix this test. Currently we're overwriting.
@@ -1144,11 +1139,9 @@ mod tests {
     #[serial]
     /// 1. Create a node
     /// 2. Add a label to the node.
-    /// 3. Delete the node so that the state is stored
-    /// 4. Add the node back to the cluster
-    /// 5. Delete the label on the node
-    /// 6. Delete the node so that the labels are stored and assert that deleted label is not in
-    ///    the store.
+    /// 3. Add the node back to the cluster
+    /// 4. Delete the label on the node
+    /// 5. Assert that deleted label is not in the store.
     async fn test_deleting_labels() {
         init_tracing();
 
@@ -1157,13 +1150,14 @@ mod tests {
         let service_name = "node-label-service";
         let client = Client::try_default().await.unwrap();
         delete_kube_state(client.clone(), namespace).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
 
         //
         // 1. Create a node.
         //
         let test_node_name = "node1";
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         add_node(client.clone(), test_node_name).await.unwrap();
+        println!("here1");
 
         //
         // 2. Add a label to the node
@@ -1173,12 +1167,12 @@ mod tests {
             set_random_label(client.clone(), test_node_name, node_label_key, service_name)
                 .await
                 .unwrap();
+        println!("here2");
 
         //
-        // 3. Delete the node and assert that the label is stored
+        // 3. Assert that the label is stored
         //
-        delete_node(client.clone(), test_node_name).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
         assert_stored_label_has_value(
             client.clone(),
             test_node_name,
@@ -1186,15 +1180,19 @@ mod tests {
             Some(&node_label_value),
         )
         .await;
+        println!("here3");
 
         //
-        // 4. Add the node back to the cluster
+        // 4. Remove and add the node back to the cluster
         //
+        delete_node(client.clone(), test_node_name).await.unwrap();
         add_node(client.clone(), test_node_name).await.unwrap();
+        println!("here4");
 
         //
         // 5. Delete the label on the node
         //
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
         NodeLabelPersistenceService::delete_node_label(
             &client,
             test_node_name,
@@ -1203,13 +1201,14 @@ mod tests {
         )
         .await
         .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
         // The node should now have no labels
         let nodes: Api<Node> = Api::all(client.clone());
         assert_eq!(
             nodes.get(test_node_name).await.unwrap().metadata.labels,
             None
         );
+        println!("here5");
 
         let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
         let config_maps_list = config_maps.list(&ListParams::default()).await.unwrap();
@@ -1218,6 +1217,7 @@ mod tests {
                 assert_ne!(name, test_node_name);
             }
         }
+        println!("here6");
         // minikube and a root certificate
         assert_eq!(config_maps_list.items.len(), 2);
     }
@@ -1411,10 +1411,13 @@ mod tests {
                             let (in_cluster, mut labels) = truth_node_labels[&node_name].clone();
                             if in_cluster {
                                 // can't change label on a deleted node
-                                labels.insert(label_key, label_value);
+                                labels.insert(label_key, label_value.clone());
                                 truth_node_labels
                                     .insert(node_name.clone(), (in_cluster, labels.clone()));
-                                debug!("Action Completed: changed label on node {}", node_name);
+                                debug!(
+                                    "Action Completed: changed label on node {} to {}",
+                                    node_name, label_value
+                                );
                                 NodeLabelPersistenceService::set_node_labels(
                                     &client,
                                     &node_name,
@@ -1428,6 +1431,9 @@ mod tests {
                     }
                 }
                 NodeAction::Delete => {
+                    // If a change is made and then the node is deleted before the storage service
+                    // sees it, the change will be lost, so sleep.
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     let node_name = truth_node_labels.keys().choose(&mut rng).cloned();
                     if let Some(node_name) = node_name {
                         let (in_cluster, labels) = truth_node_labels[&node_name].clone();
@@ -1485,8 +1491,8 @@ mod tests {
         }
 
         // All labels should be stored when the nodes are deleted:
-        delete_all_nodes(client.clone()).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        //delete_all_nodes(client.clone()).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
 
         // Iterate through the ConfigMaps and assert that the values are correct
         let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
