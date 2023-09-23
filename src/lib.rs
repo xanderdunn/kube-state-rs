@@ -12,6 +12,7 @@ use kube::{
     Client,
 };
 use serde_json::json;
+use tokio::task;
 use tracing::{debug, info, warn};
 
 // Local
@@ -408,8 +409,10 @@ impl NodeLabelPersistenceService {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_node(
-        &self,
+        client: &Client,
+        namespace: &str,
         node: &Node,
         config_map: Result<ConfigMap, kube::Error>,
         config_map_state: ConfigMapState,
@@ -428,10 +431,10 @@ impl NodeLabelPersistenceService {
                     node.metadata.name.as_ref().unwrap()
                 );
                 Self::create_stored_labels(
-                    &self.client,
+                    client,
                     node.metadata.name.as_ref().unwrap(),
                     node.metadata.labels.as_ref().unwrap(),
-                    &self.namespace,
+                    namespace,
                 )
                 .await?;
                 Ok(())
@@ -443,10 +446,10 @@ impl NodeLabelPersistenceService {
                 );
                 warn!("Encountered node {:?} with a label version, but there was no ConfigMap associated with that node. This is not expected during normal operation.", node.metadata.name);
                 Self::create_stored_labels(
-                    &self.client,
+                    client,
                     node.metadata.name.as_ref().unwrap(),
                     node.metadata.labels.as_ref().unwrap(),
-                    &self.namespace,
+                    namespace,
                 )
                 .await?;
                 Ok(())
@@ -456,12 +459,8 @@ impl NodeLabelPersistenceService {
                     "4: {} Delete the ConfigMap",
                     node.metadata.name.as_ref().unwrap()
                 );
-                Self::delete_config_map(
-                    &self.client,
-                    node.metadata.name.as_ref().unwrap(),
-                    &self.namespace,
-                )
-                .await?;
+                Self::delete_config_map(client, node.metadata.name.as_ref().unwrap(), namespace)
+                    .await?;
                 Ok(())
             }
             (ConfigMapState::Empty, NodeState::LabelsNoVersion) => {
@@ -470,11 +469,11 @@ impl NodeLabelPersistenceService {
                     node.metadata.name.as_ref().unwrap()
                 );
                 Self::update_stored_labels(
-                    &self.client,
+                    client,
                     node.metadata.name.as_ref().unwrap(),
                     node.metadata.resource_version.as_ref().unwrap(),
                     node.metadata.labels.as_ref().unwrap(),
-                    &self.namespace,
+                    namespace,
                 )
                 .await?;
                 Ok(())
@@ -484,11 +483,11 @@ impl NodeLabelPersistenceService {
                     "6: {} <This should not happen> Store all labels from the node into the ConfigMap"
                 , node.metadata.name.as_ref().unwrap());
                 Self::update_stored_labels(
-                    &self.client,
+                    client,
                     node.metadata.name.as_ref().unwrap(),
                     node.metadata.resource_version.as_ref().unwrap(),
                     node.metadata.labels.as_ref().unwrap(),
-                    &self.namespace,
+                    namespace,
                 )
                 .await?;
                 Ok(())
@@ -499,14 +498,14 @@ impl NodeLabelPersistenceService {
                     node.metadata.name.as_ref().unwrap()
                 );
                 Self::restore_node_labels(
-                    &self.client,
+                    client,
                     node.metadata.name.as_ref().unwrap(),
                     node.metadata.labels.as_ref(),
                     config_map.as_ref().unwrap().data.as_ref(),
                 )
                 .await?;
                 Self::update_config_map_resource_version(
-                    &self.client,
+                    client,
                     &config_map.unwrap(),
                     node.metadata.resource_version.as_ref().unwrap(),
                 )
@@ -516,18 +515,18 @@ impl NodeLabelPersistenceService {
             (ConfigMapState::NonEmpty, NodeState::LabelsNoVersion) => {
                 info!("8: {} Store any labels on node not in ConfigMap, Restore any labels in the ConfigMap not on the Node", node.metadata.name.as_ref().unwrap());
                 Self::restore_node_labels(
-                    &self.client,
+                    client,
                     node.metadata.name.as_ref().unwrap(),
                     node.metadata.labels.as_ref(),
                     config_map.unwrap().data.as_ref(),
                 )
                 .await?;
                 Self::update_stored_labels(
-                    &self.client,
+                    client,
                     node.metadata.name.as_ref().unwrap(),
                     node.metadata.resource_version.as_ref().unwrap(),
                     node.metadata.labels.as_ref().unwrap(),
-                    &self.namespace,
+                    namespace,
                 )
                 .await?;
                 Ok(())
@@ -570,16 +569,16 @@ impl NodeLabelPersistenceService {
                         debug!("config map labels: {:?}", config_map_labels_decoded);
                         if node_labels != config_map_labels_decoded {
                             Self::update_stored_labels(
-                                &self.client,
+                                client,
                                 node.metadata.name.as_ref().unwrap(),
                                 node.metadata.resource_version.as_ref().unwrap(),
                                 node.metadata.labels.as_ref().unwrap(),
-                                &self.namespace,
+                                namespace,
                             )
                             .await?;
                         } else {
                             Self::update_config_map_resource_version(
-                                &self.client,
+                                client,
                                 &config_map.unwrap(),
                                 node.metadata.resource_version.as_ref().unwrap(),
                             )
@@ -592,18 +591,18 @@ impl NodeLabelPersistenceService {
                         info!("11: <This should not happen!> Store any labels on node not in ConfigMap, Restore any labels in the ConfigMap not on the Node");
                         warn!("Both the node and the ConfigMap have labels and equal label version, but the ConfigMap has a higher ResourceVersion. This means an incorrect ResourceVersion was stored in the COnfig, or the node was removed from the cluster and then re-added, but the ConfigMap's ResourceVersion was not updated. This is not expected to occur during normal operation.");
                         Self::restore_node_labels(
-                            &self.client,
+                            client,
                             node.metadata.name.as_ref().unwrap(),
                             node.metadata.labels.as_ref(),
                             config_map.unwrap().data.as_ref(),
                         )
                         .await?;
                         Self::update_stored_labels(
-                            &self.client,
+                            client,
                             node.metadata.name.as_ref().unwrap(),
                             node.metadata.resource_version.as_ref().unwrap(),
                             node.metadata.labels.as_ref().unwrap(),
-                            &self.namespace,
+                            namespace,
                         )
                         .await?;
                         Ok(())
@@ -611,11 +610,11 @@ impl NodeLabelPersistenceService {
                     (LabelVersionComparison::NodeHigher, ResourceVersionComparison::Equal) => {
                         info!("12: Store: Overwrite ConfigMap labels + Store updated LabelVersion");
                         Self::update_stored_labels(
-                            &self.client,
+                            client,
                             node.metadata.name.as_ref().unwrap(),
                             node.metadata.resource_version.as_ref().unwrap(),
                             node.metadata.labels.as_ref().unwrap(),
-                            &self.namespace,
+                            namespace,
                         )
                         .await?;
                         Ok(())
@@ -624,11 +623,11 @@ impl NodeLabelPersistenceService {
                         // Someone incremented the label version
                         info!("13: Store: Overwrite ConfigMap labels + Store ResourceVersion in ConfigMap");
                         Self::update_stored_labels(
-                            &self.client,
+                            client,
                             node.metadata.name.as_ref().unwrap(),
                             node.metadata.resource_version.as_ref().unwrap(),
                             node.metadata.labels.as_ref().unwrap(),
-                            &self.namespace,
+                            namespace,
                         )
                         .await?;
                         Ok(())
@@ -640,11 +639,11 @@ impl NodeLabelPersistenceService {
                         // The node has been removed and added back to the cluster and also someone else incremented the label version
                         info!("14: Store: Overwrite ConfigMap labels + Store ResourceVersion in ConfigMap");
                         Self::update_stored_labels(
-                            &self.client,
+                            client,
                             node.metadata.name.as_ref().unwrap(),
                             node.metadata.resource_version.as_ref().unwrap(),
                             node.metadata.labels.as_ref().unwrap(),
-                            &self.namespace,
+                            namespace,
                         )
                         .await?;
                         Ok(())
@@ -653,7 +652,7 @@ impl NodeLabelPersistenceService {
                         info!("15: Restore: Overwrite node labels");
                         // TODO: This does not overwrite but it should.
                         Self::restore_node_labels(
-                            &self.client,
+                            client,
                             node.metadata.name.as_ref().unwrap(),
                             node.metadata.labels.as_ref(),
                             config_map.unwrap().data.as_ref(),
@@ -670,14 +669,14 @@ impl NodeLabelPersistenceService {
                         );
                         // TODO: This does not overwrite but it should.
                         Self::restore_node_labels(
-                            &self.client,
+                            client,
                             node.metadata.name.as_ref().unwrap(),
                             node.metadata.labels.as_ref(),
                             config_map.as_ref().unwrap().data.as_ref(),
                         )
                         .await?;
                         Self::update_config_map_resource_version(
-                            &self.client,
+                            client,
                             &config_map.unwrap(),
                             node.metadata.resource_version.as_ref().unwrap(),
                         )
@@ -694,14 +693,14 @@ impl NodeLabelPersistenceService {
                         );
                         // TODO: This does not overwrite but it should.
                         Self::restore_node_labels(
-                            &self.client,
+                            client,
                             node.metadata.name.as_ref().unwrap(),
                             node.metadata.labels.as_ref(),
                             config_map.as_ref().unwrap().data.as_ref(),
                         )
                         .await?;
                         Self::update_config_map_resource_version(
-                            &self.client,
+                            client,
                             &config_map.unwrap(),
                             node.metadata.resource_version.as_ref().unwrap(),
                         )
@@ -714,7 +713,6 @@ impl NodeLabelPersistenceService {
     }
 
     async fn get_config_map_state(
-        &self,
         config_map: &Result<ConfigMap, kube::Error>,
     ) -> Result<ConfigMapState, anyhow::Error> {
         match config_map {
@@ -732,7 +730,7 @@ impl NodeLabelPersistenceService {
         }
     }
 
-    async fn get_node_state(&self, node: &Node) -> Result<NodeState, anyhow::Error> {
+    async fn get_node_state(node: &Node) -> Result<NodeState, anyhow::Error> {
         let labels = &node.metadata.labels;
         match labels {
             Some(labels) => {
@@ -747,7 +745,6 @@ impl NodeLabelPersistenceService {
     }
 
     async fn compare_label_version(
-        &self,
         node: &Node,
         config_map: &Result<ConfigMap, kube::Error>,
     ) -> Result<LabelVersionComparison, anyhow::Error> {
@@ -782,7 +779,6 @@ impl NodeLabelPersistenceService {
     }
 
     async fn compare_resource_version(
-        &self,
         node: &Node,
         config_map: &Result<ConfigMap, kube::Error>,
     ) -> Result<ResourceVersionComparison, anyhow::Error> {
@@ -823,26 +819,46 @@ impl NodeLabelPersistenceService {
         let nodes_list = nodes.list(&ListParams::default()).await?;
         let config_maps: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.namespace);
 
-        // TODO: Parallelize this loop across number of cores
-        // TODO: Only iterate 1/num_replicas nodes
-        for node in nodes_list {
-            let node_name = node.metadata.name.as_ref().unwrap();
-            let config_map = config_maps.get(node_name).await;
-            let config_map_state = self.get_config_map_state(&config_map).await?;
-            let node_state = self.get_node_state(&node).await?;
-            let label_version_cmp = self.compare_label_version(&node, &config_map).await?;
-            let resource_version_cmp = self.compare_resource_version(&node, &config_map).await?;
-            self.handle_node(
-                &node,
-                config_map,
-                config_map_state,
-                node_state,
-                label_version_cmp,
-                resource_version_cmp,
-            )
-            .await?;
+        // TODO: I should be responsible for only 1/N items in nodes_list where N is the number of
+        // replicas
+
+        let mut handles = Vec::new();
+        for node in nodes_list.items.clone() {
+            let config_maps = config_maps.clone();
+            let client = self.client.clone();
+            let namespace = self.namespace.clone();
+            let handle = task::spawn(async move {
+                let node_name = node.metadata.name.as_ref().unwrap();
+                let config_map = config_maps.get(node_name).await;
+                let config_map_state = Self::get_config_map_state(&config_map).await?;
+                let node_state = Self::get_node_state(&node).await?;
+                let label_version_cmp = Self::compare_label_version(&node, &config_map).await?;
+                let resource_version_cmp =
+                    Self::compare_resource_version(&node, &config_map).await?;
+                Self::handle_node(
+                    &client,
+                    &namespace,
+                    &node,
+                    config_map,
+                    config_map_state,
+                    node_state,
+                    label_version_cmp,
+                    resource_version_cmp,
+                )
+                .await?;
+                Result::<(), anyhow::Error>::Ok(())
+            });
+            handles.push(handle);
         }
-        Ok(())
+
+        let results: Result<Vec<_>, _> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .collect();
+        match results {
+            Ok(_) => Ok(()),
+            Err(err) => Err(anyhow!(err)),
+        }
     }
 }
 

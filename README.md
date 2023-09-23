@@ -77,10 +77,9 @@ echo '{
 ### TODO
 - Fix test_not_overwriting_labels
 - Split the iteration of nodes across `num_replicas`
-- Make the node iteration parallel across number of cores on a given replica
 - Increase `num_replicas` > 1
-- Split the storage and restoring into two separate processes
 - Namespace the ConfigMap names. They could all start with `label_storage.`
+- Split the storage and restoring into two separate processes
 - Handle the situation where `num_replicas` > `num_nodes`
 - Add logging - what output is used? DataDog?
 - Add metrics - what output is used? DataDog?
