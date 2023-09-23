@@ -67,6 +67,7 @@ echo '{
 - If a change to node metadata is made seconds before the node is deleted, the change can be lost. We assume this is acceptable. If label modifications moments before deletion are expected to happen in production, an alternate implementation will be required.
 
 ### Fault Tolerance
+We want to achieve liveness and eventual consistency in the face of:
 - Crash: The service crashes. We have many replicas with leader election, so when one crashes another will take over. In addition, we have automatic restart.
 - Transient: A particular node fails long enough that our leader election times out, and then returns to working. In this case we avoid duplicated work by checking an incrementing counter stored in the ConfigMap.
 - Permanent: In this case some other replica will eventually be chosen. Ideally a liveness and readiness check would fail and Kubernetes would replace this node.

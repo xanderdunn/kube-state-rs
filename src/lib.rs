@@ -347,14 +347,22 @@ impl NodeLabelPersistenceService {
                 .map_err(|e| anyhow!(e).context("Failed to update config map"))?;
 
             // Update the label_version on the Node
-            Self::add_or_update_node_label(
+            // TODO: Maybe I should surface all errors and print them as warnings inside handle_nodes
+            // rather than handling this one here?
+            let _ = Self::add_or_update_node_label(
                 client,
                 node_name,
                 LABEL_VERSION,
                 &label_version.to_string(),
                 "default",
             )
-            .await?;
+            .await
+            .map_err(|e| {
+                warn!(
+                    "create_stored_label failed to update LABEL_VERSION on node {}: {:?}",
+                    node_name, e
+                );
+            });
         }
 
         Ok(())
