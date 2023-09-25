@@ -77,13 +77,7 @@ We want to achieve liveness and eventual consistency in the face of:
 
 ### TODO
 - Fix test_not_overwriting_labels
-- Split the iteration of nodes across `num_replicas`
-- Increase `num_replicas` > 1
+- Split the iteration of nodes across `num_replicas`. Use `chunk` to handle the situation where `num_replicas` > `num_nodes`.
+- Increase `num_replicas` > 1 in the tests
 - Namespace the ConfigMap names. They could all start with `label_storage.`
 - Split the storage and restoring into two separate processes
-- Handle the situation where `num_replicas` > `num_nodes`
-- Add logging - what output is used? DataDog?
-- Add metrics - what output is used? DataDog?
-    - An interesting metric would be (# of nodes we think have latest labels) / (total # of nodes)
-    - Imagine something is continuously setting the labels to old values. Some metric to understand churn would be useful.
-- Add Kubernetes liveness and readiness check with restart
