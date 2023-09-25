@@ -65,6 +65,7 @@ pub struct NodeLabelPersistenceService {
 
 impl NodeLabelPersistenceService {
     pub async fn new(namespace: &str, client: &Client) -> Result<Self, anyhow::Error> {
+        info!("Creating NodeLabelPersistenceService");
         Ok(NodeLabelPersistenceService {
             client: client.clone(),
             namespace: namespace.to_string(),
@@ -430,11 +431,11 @@ impl NodeLabelPersistenceService {
     ) -> Result<(), anyhow::Error> {
         match (config_map_state, node_state) {
             (ConfigMapState::None, NodeState::NoLabels) => {
-                info!("1: {} Do nothing", node.metadata.name.as_ref().unwrap());
+                debug!("1: {} Do nothing", node.metadata.name.as_ref().unwrap());
                 Ok(())
             }
             (ConfigMapState::None, NodeState::LabelsNoVersion) => {
-                info!(
+                debug!(
                     "2: {} Create ConfigMap + Store all labels from Node + set LabelVersion to 1",
                     node.metadata.name.as_ref().unwrap()
                 );
@@ -448,7 +449,7 @@ impl NodeLabelPersistenceService {
                 Ok(())
             }
             (ConfigMapState::None, NodeState::LabelsAndVersion) => {
-                info!(
+                debug!(
                     "3: {} Create ConfigMap + Store all labels from Node + set LabelVersion to 1",
                     node.metadata.name.as_ref().unwrap()
                 );
@@ -463,7 +464,7 @@ impl NodeLabelPersistenceService {
                 Ok(())
             }
             (ConfigMapState::Empty, NodeState::NoLabels) => {
-                info!(
+                debug!(
                     "4: {} Delete the ConfigMap",
                     node.metadata.name.as_ref().unwrap()
                 );
@@ -472,7 +473,7 @@ impl NodeLabelPersistenceService {
                 Ok(())
             }
             (ConfigMapState::Empty, NodeState::LabelsNoVersion) => {
-                info!(
+                debug!(
                     "5: {} Store all labels from Node + increment LabelVersion",
                     node.metadata.name.as_ref().unwrap()
                 );
@@ -487,7 +488,7 @@ impl NodeLabelPersistenceService {
                 Ok(())
             }
             (ConfigMapState::Empty, NodeState::LabelsAndVersion) => {
-                info!(
+                debug!(
                     "6: {} <This should not happen> Store all labels from the node into the ConfigMap"
                 , node.metadata.name.as_ref().unwrap());
                 Self::update_stored_labels(
@@ -501,7 +502,7 @@ impl NodeLabelPersistenceService {
                 Ok(())
             }
             (ConfigMapState::NonEmpty, NodeState::NoLabels) => {
-                info!(
+                debug!(
                     "7: {} Restore all labels to Node + Update ResourceVersion",
                     node.metadata.name.as_ref().unwrap()
                 );
@@ -521,7 +522,7 @@ impl NodeLabelPersistenceService {
                 Ok(())
             }
             (ConfigMapState::NonEmpty, NodeState::LabelsNoVersion) => {
-                info!("8: {} Store any labels on node not in ConfigMap, Restore any labels in the ConfigMap not on the Node", node.metadata.name.as_ref().unwrap());
+                debug!("8: {} Store any labels on node not in ConfigMap, Restore any labels in the ConfigMap not on the Node", node.metadata.name.as_ref().unwrap());
                 Self::restore_node_labels(
                     client,
                     node.metadata.name.as_ref().unwrap(),
@@ -542,12 +543,12 @@ impl NodeLabelPersistenceService {
             (ConfigMapState::NonEmpty, NodeState::LabelsAndVersion) => {
                 match (label_version_cmp, resource_version_cmp) {
                     (LabelVersionComparison::Equal, ResourceVersionComparison::Equal) => {
-                        info!("9: {} Do nothing", node.metadata.name.as_ref().unwrap());
+                        debug!("9: {} Do nothing", node.metadata.name.as_ref().unwrap());
                         Ok(())
                     }
                     (LabelVersionComparison::Equal, ResourceVersionComparison::NodeHigher) => {
                         // Someone could've modified the labels without incrementing the LabelVersion
-                        info!(
+                        debug!(
                             "10: {} Update ConfigMap with node labels if there are any changes + Store updated ResourceVersion",
                             node.metadata.name.as_ref().unwrap()
                         );
@@ -596,7 +597,7 @@ impl NodeLabelPersistenceService {
                     }
                     (LabelVersionComparison::Equal, ResourceVersionComparison::ConfigMapHigher) => {
                         // This means that the node was deleted and labels were restored without updating the ResourceVersion in the ConfigMap
-                        info!("11: <This should not happen!> Store any labels on node not in ConfigMap, Restore any labels in the ConfigMap not on the Node");
+                        debug!("11: <This should not happen!> Store any labels on node not in ConfigMap, Restore any labels in the ConfigMap not on the Node");
                         warn!("Both the node and the ConfigMap have labels and equal label version, but the ConfigMap has a higher ResourceVersion. This means an incorrect ResourceVersion was stored in the COnfig, or the node was removed from the cluster and then re-added, but the ConfigMap's ResourceVersion was not updated. This is not expected to occur during normal operation.");
                         Self::restore_node_labels(
                             client,
@@ -616,7 +617,9 @@ impl NodeLabelPersistenceService {
                         Ok(())
                     }
                     (LabelVersionComparison::NodeHigher, ResourceVersionComparison::Equal) => {
-                        info!("12: Store: Overwrite ConfigMap labels + Store updated LabelVersion");
+                        debug!(
+                            "12: Store: Overwrite ConfigMap labels + Store updated LabelVersion"
+                        );
                         Self::update_stored_labels(
                             client,
                             node.metadata.name.as_ref().unwrap(),
@@ -629,7 +632,7 @@ impl NodeLabelPersistenceService {
                     }
                     (LabelVersionComparison::NodeHigher, ResourceVersionComparison::NodeHigher) => {
                         // Someone incremented the label version
-                        info!("13: Store: Overwrite ConfigMap labels + Store ResourceVersion in ConfigMap");
+                        debug!("13: Store: Overwrite ConfigMap labels + Store ResourceVersion in ConfigMap");
                         Self::update_stored_labels(
                             client,
                             node.metadata.name.as_ref().unwrap(),
@@ -645,7 +648,7 @@ impl NodeLabelPersistenceService {
                         ResourceVersionComparison::ConfigMapHigher,
                     ) => {
                         // The node has been removed and added back to the cluster and also someone else incremented the label version
-                        info!("14: Store: Overwrite ConfigMap labels + Store ResourceVersion in ConfigMap");
+                        debug!("14: Store: Overwrite ConfigMap labels + Store ResourceVersion in ConfigMap");
                         Self::update_stored_labels(
                             client,
                             node.metadata.name.as_ref().unwrap(),
@@ -657,7 +660,7 @@ impl NodeLabelPersistenceService {
                         Ok(())
                     }
                     (LabelVersionComparison::ConfigMapHigher, ResourceVersionComparison::Equal) => {
-                        info!("15: Restore: Overwrite node labels");
+                        debug!("15: Restore: Overwrite node labels");
                         // TODO: This does not overwrite but it should.
                         Self::restore_node_labels(
                             client,
@@ -672,7 +675,7 @@ impl NodeLabelPersistenceService {
                         LabelVersionComparison::ConfigMapHigher,
                         ResourceVersionComparison::NodeHigher,
                     ) => {
-                        info!(
+                        debug!(
                             "16: Restore: Overwrite node labels + Store ResourceVersion in ConfigMap"
                         );
                         // TODO: This does not overwrite but it should.
@@ -696,7 +699,7 @@ impl NodeLabelPersistenceService {
                         ResourceVersionComparison::ConfigMapHigher,
                     ) => {
                         // The node has been removed from the cluster and added back
-                        info!(
+                        debug!(
                             "17: Restore: Overwrite node labels + Store ResourceVersion in ConfigMap"
                         );
                         // TODO: This does not overwrite but it should.

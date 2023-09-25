@@ -4,7 +4,7 @@ Within a Kubernetes cluster, nodes are often added/deleted as they undergo maint
 Write a service that will preserve Nodes’ labels if they are deleted from the cluster and re-apply them if they enter back into the cluster. This service itself should be stateless, but can use Kubernetes for any state storage.
 
 ### Architecture Overview
-We have two processes, one responsible for storing node metadata, and one responsible for setting node metadata on nodes. Each process iterates over the nodes in the cluster in a loop, looking for changes to either store or set on nodes. Liveness is achieved by running both processes as Kubernetes pod services with `N` replicas. Each replica is responsible for `1/N` of the nodes in the cluster. Consistency is eventual, we can expect a short delay between a node entering a cluster and the metadata being set on the node. Similarly, we can expect a short delay between someone modifying the metadata on a node and our service storing the updated metadata. The delay is dependent on the number of replicas `N` and the number of nodes in the cluster, but is generally expected to be sub-minute.
+We have two processes, one responsible for storing node metadata, and one responsible for setting node metadata on nodes. Each process iterates over the nodes in the cluster in a loop, looking for changes to either store or set on nodes. Liveness is achieved by running both processes as Kubernetes pod services with `N` replicas. Each replica is responsible for `1/N` of the nodes in the cluster. If one of the replicas goes down, the remaining replicas will adjust their 1/N partitions to cover all nodes on their next iteration through the nodes. Consistency is eventual, we can expect a short delay between a node entering a cluster and the metadata being set on the node. Similarly, we can expect a short delay between someone modifying the metadata on a node and our service storing the updated metadata. The delay is dependent on the number of replicas `N` and the number of nodes in the cluster, but is generally expected to be sub-minute.
 
 ### Setup
 - Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
@@ -22,7 +22,7 @@ We have two processes, one responsible for storing node metadata, and one respon
 ### Example Local Dev Usage
 Here is some example usage of the binary:
 - Run the binary: `cargo run`
-- Create a node: 
+- Create a node:
 ```
 echo '{
   "apiVersion": "v1",
@@ -49,8 +49,9 @@ echo '{
 - See that the labels have been restored on the node: `kubectl get nodes my-new-node --show-labels`
 
 ### Assumptions
+- For this implementation I assume that node labels can be modified by anyone from anywhere at anytime. If we were to instead apply all label changes through a particular pod service, this problem would be much easier to solve. That service could store the metadata, and a separate service could trigger applying the metadata to the node by reading from storage.
 - This repo uses a local minikube to run integration tests with `cargo test` both locally for dev and in GitHub Action CI.
-- This service assumes that every node has a `metadata.name`, and it assumes that the name will be a unique identifier.
+- This service assumes that every node has a `metadata.name`, and it assumes that the name will be a unique identifier. Suppose unique node names node1...node10,000. I assume that when nodeN leaves the cluster, we can expect nodeN to return to the cluster, rather than for example always returning to the cluster with a new identifier, such as node10,001. If that's not the case, then we need some kind of zookeeper strategy to apply labels to at most one node, regardless of node identifier.
 - [Kubernetes ConfigMaps](https://kubernetes.io/docs/concepts/configuration/configmap/) were chosen as the persistent storage mechanism here because it's a simple, built-in key-value store that works for this purpose. We create one `ConfigMap` for each node. We assume that the creation and replacement of `ConfigMap`s is cheap, and that any particular node will have a relatively small number of labels (not hundreds or thousands of labels per node).
 - We assume that all labels on a node when it is deleted are exactly what we want to persist. If there is a label stored in a `ConfigMap` that is no longer on the node when it is deleted, it will be removed from the `ConfigMap`.
 - We assume a label should be set on a node only if the label is missing. If the label is already set, we do not overwrite it.
@@ -73,11 +74,11 @@ We want to achieve liveness and eventual consistency in the face of:
 - Permanent: In this case some other replica will eventually be chosen. Ideally a liveness and readiness check would fail and Kubernetes would replace this node.
 - Hardware: A node's hardware dies. Leader election should find another node to continue operation.
 - Network: If a node experiences a network failure, a new leader will eventually be chosen.
-- Response: Imagine a situation where etcd returns stale data on a particular node. We iterate through our nodes ever few minutes and make sure 
+- Response: Imagine a situation where etcd returns stale data on a particular node. We iterate through our nodes ever few minutes and make sure
 
 ### TODO
 - Fix test_not_overwriting_labels
-- Split the iteration of nodes across `num_replicas`. Use `chunk` to handle the situation where `num_replicas` > `num_nodes`.
+- Partition node iteration across `num_replicas`. Handle the situation where `num_replicas` > `num_nodes`. Use `chunks`.
 - Increase `num_replicas` > 1 in the tests
 - Namespace the ConfigMap names. They could all start with `label_storage.`
 - Split the storage and restoring into two separate processes
