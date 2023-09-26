@@ -28,7 +28,7 @@ const RESOURCE_VERSION: &str = "resource_version";
 
 /// The special token reserved to encode `/` in label keys so that they can be stored as ConfigMap
 /// keys.
-const SLASH_TOKEN: &str = "-SLASH-";
+const SLASH_TOKEN: &str = "---SLASH---";
 
 enum ConfigMapState {
     None,  // A ConfigMap does not exist for this node
@@ -1144,7 +1144,6 @@ mod tests {
             .any(|n| n.metadata.name == Some(test_node_name.to_string())));
 
         // Now the stored label value and the node label value are not the same.
-        println!("here1");
         assert_stored_label_has_value(
             client.clone(),
             test_node_name,
@@ -1152,7 +1151,6 @@ mod tests {
             Some(&node_label_value),
         )
         .await;
-        println!("here2");
         // Assert that the node has the new label
         assert_node_label_has_value(
             client.clone(),
@@ -1161,7 +1159,6 @@ mod tests {
             Some(&new_label_value.to_string()),
         )
         .await;
-        println!("here3");
 
         //
         // 5. Assert that the new label is stored.
@@ -1175,7 +1172,6 @@ mod tests {
             Some(&new_label_value.to_string()),
         )
         .await;
-        println!("here4");
     }
 
     #[tokio::test]
@@ -1200,7 +1196,6 @@ mod tests {
         //
         let test_node_name = "node1";
         add_node(client.clone(), test_node_name).await.unwrap();
-        println!("here1");
 
         //
         // 2. Add a label to the node
@@ -1210,7 +1205,6 @@ mod tests {
             set_random_label(client.clone(), test_node_name, node_label_key, service_name)
                 .await
                 .unwrap();
-        println!("here2");
 
         //
         // 3. Assert that the label is stored
@@ -1223,14 +1217,12 @@ mod tests {
             Some(&node_label_value),
         )
         .await;
-        println!("here3");
 
         //
         // 4. Remove and add the node back to the cluster
         //
         delete_node(client.clone(), test_node_name).await.unwrap();
         add_node(client.clone(), test_node_name).await.unwrap();
-        println!("here4");
 
         //
         // 5. Delete the label on the node
@@ -1251,7 +1243,6 @@ mod tests {
             nodes.get(test_node_name).await.unwrap().metadata.labels,
             None
         );
-        println!("here5");
 
         let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
         let config_maps_list = config_maps.list(&ListParams::default()).await.unwrap();
@@ -1260,7 +1251,6 @@ mod tests {
                 assert_ne!(name, test_node_name);
             }
         }
-        println!("here6");
         // minikube and a root certificate
         assert_eq!(config_maps_list.items.len(), 2);
     }
@@ -1303,7 +1293,6 @@ mod tests {
         Delete,
     }
 
-    // FIXME: There are scenarios where this test fails
     #[tokio::test]
     #[serial]
     /// This test takes random actions and asserts that the state is as expected.
@@ -1564,7 +1553,7 @@ mod tests {
         for config_map in config_maps_list {
             let config_map_name = config_map.metadata.name.unwrap();
             if config_map_name != "kube-root-ca.crt" && config_map_name != "minikube" {
-                println!("ConfigMap name: {}", config_map_name);
+                debug!("ConfigMap name: {}", config_map_name);
                 let truth_labels = truth_node_labels.get(&config_map_name).unwrap();
                 if let Some(mut config_map_labels) = config_map.data.clone() {
                     config_map_labels.remove(RESOURCE_VERSION);
