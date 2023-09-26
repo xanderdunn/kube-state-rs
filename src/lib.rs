@@ -825,16 +825,32 @@ impl NodeLabelPersistenceService {
         }
     }
 
-    pub async fn handle_nodes(&self) -> Result<(), anyhow::Error> {
+    /// Iterate over the nodes in the cluster looking for changed metadata to either store or
+    /// update on the nodes.
+    pub async fn handle_nodes(
+        &self,
+        num_ready_replicas: usize,
+        my_replica_id: usize,
+    ) -> Result<(), anyhow::Error> {
         let nodes: Api<Node> = Api::all(self.client.clone());
         let nodes_list = nodes.list(&ListParams::default()).await?;
         let config_maps: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.namespace);
 
-        // TODO: I should be responsible for only 1/N items in nodes_list where N is the number of
-        // replicas
-
         let mut handles = Vec::new();
-        for node in nodes_list.items.clone() {
+        let my_nodes = nodes_list
+            .items
+            .chunks(num_ready_replicas)
+            .nth(my_replica_id)
+            .unwrap_or(&[]);
+        debug!(
+            "replica_id {} of {}: I am responsible for {} of {} nodes",
+            my_replica_id,
+            num_ready_replicas - 1,
+            my_nodes.len(),
+            nodes_list.items.len(),
+        );
+        for node in my_nodes {
+            let node = node.clone();
             let config_maps = config_maps.clone();
             let client = self.client.clone();
             let namespace = self.namespace.clone();

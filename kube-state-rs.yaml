@@ -15,6 +15,9 @@ rules:
 - apiGroups: [""]
   resources: ["configmaps"]
   verbs: ["get", "list", "create", "update", "delete", "patch"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -30,11 +33,12 @@ subjects:
   namespace: default
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: kube-state-rs
 spec:
-  replicas: 1
+  replicas: 4
+  serviceName: "kube-state-rs"
   selector:
     matchLabels:
       app: kube-state-rs

@@ -4,7 +4,7 @@ Within a Kubernetes cluster, nodes are often added/deleted as they undergo maint
 Write a service that will preserve Nodes’ labels if they are deleted from the cluster and re-apply them if they enter back into the cluster. This service itself should be stateless, but can use Kubernetes for any state storage.
 
 ### Architecture Overview
-We have two processes, one responsible for storing node metadata, and one responsible for setting node metadata on nodes. Each process iterates over the nodes in the cluster in a loop, looking for changes to either store or set on nodes. Liveness is achieved by running both processes as Kubernetes pod services with `N` replicas. Each replica is responsible for `1/N` of the nodes in the cluster. If one of the replicas goes down, the remaining replicas will adjust their 1/N partitions to cover all nodes on their next iteration through the nodes. Consistency is eventual, we can expect a short delay between a node entering a cluster and the metadata being set on the node. Similarly, we can expect a short delay between someone modifying the metadata on a node and our service storing the updated metadata. The delay is dependent on the number of replicas `N` and the number of nodes in the cluster, but is generally expected to be sub-minute.
+We have a service that runs as a replicable, horizontally scalable Kubernetes StatefulSet. The service iterates through nodes in the cluster both looking for changes in node metadata to store, as well as missing metadata on nodes to restore. The service iterates over the nodes in the cluster in a loop, looking for changes to either store or set on nodes. Liveness is achieved by running as Kubernetes a pod with `N` replicas. Each replica is responsible for `1/N` of the nodes in the cluster. If one of the replicas goes down, the remaining replicas will adjust their 1/N partitions to cover all nodes on their next iteration through the nodes. Consistency is eventual, we can expect a short delay between a node entering a cluster and the metadata being set on the node. Similarly, we can expect a short delay between someone modifying the metadata on a node and our service storing the updated metadata. The delay is dependent on the number of replicas `N` and the number of nodes in the cluster, but is generally expected to be sub-minute.
 
 ### Setup
 - Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
@@ -78,7 +78,3 @@ We want to achieve liveness and eventual consistency in the face of:
 
 ### TODO
 - Fix test_not_overwriting_labels
-- Partition node iteration across `num_replicas`. Handle the situation where `num_replicas` > `num_nodes`. Use `chunks`.
-- Increase `num_replicas` > 1 in the tests
-- Namespace the ConfigMap names. They could all start with `label_storage.`
-- Split the storage and restoring into two separate processes
