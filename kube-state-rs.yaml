@@ -48,6 +48,27 @@ spec:
         app: kube-state-rs
     spec:
       serviceAccountName: kube-state-rs-sa
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - kube-state-rs
+              topologyKey: "topology.kubernetes.io/region"
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - kube-state-rs
+              topologyKey: "kubernetes.io/hostname"
       containers:
         - name: kube-state-rs
           image: kube-state-rs
