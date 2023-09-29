@@ -1,0 +1,11 @@
+FROM rust:1-slim-bullseye
+
+COPY ./Cargo.toml /usr/local/kube-state-rs/Cargo.toml
+COPY ./src /usr/local/kube-state-rs/src
+
+RUN cd /usr/local/kube-state-rs/src/bin/watcher && cargo build
+RUN cp /usr/local/kube-state-rs/target/debug/watcher /usr/local/bin/watcher
+
+RUN chmod +x /usr/local/bin/watcher
+
+ENTRYPOINT ["/usr/local/bin/watcher"]

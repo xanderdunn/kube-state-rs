@@ -1,53 +1,52 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: kube-state-rs-sa
+  name: kube-state-rs-watcher-sa
   namespace: default
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kube-state-rs-combined-role
+  name: kube-state-rs-watcher-combined-role
 rules:
 - apiGroups: [""]
   resources: ["nodes"]
-  verbs: ["get", "list", "watch", "patch"]
+  verbs: ["watch", "list"]
 - apiGroups: [""]
   resources: ["configmaps"]
-  verbs: ["get", "list", "create", "update", "delete", "patch"]
-- apiGroups: ["apps"]
-  resources: ["statefulsets"]
-  verbs: ["get", "list"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: kube-state-rs-combined-role-binding
+  name: kube-state-rs-watcher-combined-role-binding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: kube-state-rs-combined-role
+  name: kube-state-rs-watcher-combined-role
 subjects:
 - kind: ServiceAccount
-  name: kube-state-rs-sa
+  name: kube-state-rs-watcher-sa
   namespace: default
 ---
 apiVersion: apps/v1
-kind: StatefulSet
+kind: Deployment
 metadata:
-  name: kube-state-rs
+  name: kube-state-rs-watcher
 spec:
   replicas: 4
-  serviceName: "kube-state-rs"
   selector:
     matchLabels:
-      app: kube-state-rs
+      app: kube-state-rs-watcher
   template:
     metadata:
       labels:
-        app: kube-state-rs
+        app: kube-state-rs-watcher
     spec:
-      serviceAccountName: kube-state-rs-sa
+      serviceAccountName: kube-state-rs-watcher-sa
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -58,7 +57,7 @@ spec:
                 - key: app
                   operator: In
                   values:
-                  - kube-state-rs
+                  - kube-state-rs-watcher
               topologyKey: "topology.kubernetes.io/region"
           - weight: 50
             podAffinityTerm:
@@ -67,9 +66,9 @@ spec:
                 - key: app
                   operator: In
                   values:
-                  - kube-state-rs
+                  - kube-state-rs-watcher
               topologyKey: "kubernetes.io/hostname"
       containers:
-        - name: kube-state-rs
-          image: kube-state-rs
+        - name: kube-state-rs-watcher
+          image: kube-state-rs-watcher
           imagePullPolicy: IfNotPresent

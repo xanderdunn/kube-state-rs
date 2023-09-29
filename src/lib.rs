@@ -17,6 +17,8 @@ use tracing::{debug, info, warn};
 
 // Local
 pub mod utils;
+pub mod watcher;
+use utils::{code_key_slashes, SLASH_TOKEN};
 
 /// The monotonically increasing revision count of the labels on the node. +1 every time the labels
 /// stored in the ConfigMap change for a node.
@@ -25,10 +27,6 @@ const LABEL_VERSION: &str = "label_version";
 /// The ResourceVersion of the node as last seen by the ConfigMap.
 /// This is updated on the ConfigMap every time labels are stored or restored.
 const RESOURCE_VERSION: &str = "resource_version";
-
-/// The special token reserved to encode `/` in label keys so that they can be stored as ConfigMap
-/// keys.
-const SLASH_TOKEN: &str = "---SLASH---";
 
 enum ConfigMapState {
     None,  // A ConfigMap does not exist for this node
@@ -72,28 +70,6 @@ impl NodeLabelPersistenceService {
         })
     }
 
-    /// As a workaround for Kubernetes ConfigMap key restrictions, we replace all forward slashes in
-    /// keys with SLASH_TOKEN.
-    /// This function either encodes or decodes all keys in a given map.
-    /// encode: true is to replace `/` with `SLASH_TOKEN`
-    fn code_key_slashes(node_labels: &mut BTreeMap<String, String>, encode: bool) {
-        let (from, to) = if encode {
-            ("/", SLASH_TOKEN)
-        } else {
-            (SLASH_TOKEN, "/")
-        };
-        node_labels
-            .keys()
-            .cloned()
-            .collect::<Vec<String>>()
-            .into_iter()
-            .for_each(|key| {
-                if let Some(value) = node_labels.remove(&key) {
-                    node_labels.insert(key.replace(from, to), value);
-                }
-            });
-    }
-
     /// A convenience class method that returns all labels stored in the ConfigMap for a given node
     /// name.
     pub async fn get_config_map_labels(
@@ -107,7 +83,7 @@ impl NodeLabelPersistenceService {
             Ok(config_map) => match config_map.data {
                 Some(config_map_data) => {
                     let mut config_map_data = config_map_data.clone();
-                    Self::code_key_slashes(&mut config_map_data, false);
+                    code_key_slashes(&mut config_map_data, false);
                     Ok(Some(config_map_data))
                 }
                 None => Ok(None),
@@ -265,7 +241,7 @@ impl NodeLabelPersistenceService {
                 .unwrap_or(&"0".to_string())
                 .to_string(),
         );
-        Self::code_key_slashes(&mut node_labels, true);
+        code_key_slashes(&mut node_labels, true);
         let data = ConfigMap {
             data: Some(node_labels),
             metadata: ObjectMeta {
@@ -332,7 +308,7 @@ impl NodeLabelPersistenceService {
             Self::delete_config_map(client, node_name, namespace).await?;
             Self::delete_node_label(client, node_name, LABEL_VERSION, "kube-state-rs").await?;
         } else {
-            Self::code_key_slashes(&mut node_labels, true);
+            code_key_slashes(&mut node_labels, true);
             let data = ConfigMap {
                 data: Some(node_labels.clone()),
                 metadata: ObjectMeta {
@@ -568,7 +544,7 @@ impl NodeLabelPersistenceService {
                             match config_map.as_ref().unwrap().data.clone() {
                                 Some(data) => {
                                     let mut data = data.clone();
-                                    Self::code_key_slashes(&mut data, false);
+                                    code_key_slashes(&mut data, false);
                                     data.remove(RESOURCE_VERSION);
                                     Some(data)
                                 }
@@ -1004,7 +980,7 @@ mod tests {
     /// 3. Assert that the label is stored
     /// 4. Add the node back to the cluster and assert that the label is restored
     async fn test_add_and_remove_nodes() {
-        init_tracing();
+        init_tracing("kube_state_rs", tracing::Level::DEBUG);
 
         // Start our service
         let client = Client::try_default().await.unwrap();
@@ -1078,7 +1054,7 @@ mod tests {
     /// This test is to make sure that we do not overwrite newer labels on nodes even when they are
     /// added back.
     async fn test_not_overwriting_labels() {
-        init_tracing();
+        init_tracing("kube_state_rs", tracing::Level::DEBUG);
 
         let namespace = "default";
         let client = Client::try_default().await.unwrap();
@@ -1182,7 +1158,7 @@ mod tests {
     /// 4. Delete the label on the node
     /// 5. Assert that deleted label is not in the store.
     async fn test_deleting_labels() {
-        init_tracing();
+        init_tracing("kube_state_rs", tracing::Level::DEBUG);
 
         // Start from a clean slate
         let namespace = "default";
@@ -1299,7 +1275,7 @@ mod tests {
     /// This serves as differential fuzzing: the book-keeping has been re-implemented and we check
     /// this implementation against the NodeLabelPersistenceService implementation.
     async fn fuzz_test() {
-        init_tracing();
+        init_tracing("kube_state_rs", tracing::Level::DEBUG);
 
         // Start from a clean slate
         let namespace = "default";

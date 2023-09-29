@@ -3,6 +3,15 @@ name = "kube-state-rs"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "kube_state_rs"
+
+[[bin]]
+name = "watcher"
+
+[[bin]]
+name = "processor"
+
 [dependencies]
 kube = { version = "0.86", features = ["runtime", "derive"] }
 k8s-openapi = { version = "0.20.0", features = ["latest"] }

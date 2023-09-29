@@ -13,7 +13,7 @@ use kube_state_rs::{
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    init_tracing();
+    init_tracing("processor", tracing::Level::DEBUG);
     setup_exit_hooks();
     let client = Client::try_default().await.unwrap();
     let node_watcher = NodeLabelPersistenceService::new("default", &client)

@@ -1,25 +1,58 @@
-### Problem
+## Problem
 Within a Kubernetes cluster, nodes are often added/deleted as they undergo maintenance with cloud providers. When this happens, metadata stored in the Kubernetes "Node" object is lost. This can be undesirable when using dedicated capacity, as you would like some data such as any Node labels to be kept across the node leaving/entering the cluster.
 
 Write a service that will preserve Nodes’ labels if they are deleted from the cluster and re-apply them if they enter back into the cluster. This service itself should be stateless, but can use Kubernetes for any state storage.
 
-### Architecture Overview
-We have a service that runs as a replicable, horizontally scalable Kubernetes StatefulSet. The service iterates through nodes in the cluster both looking for changes in node metadata to store, as well as missing metadata on nodes to restore. The service iterates over the nodes in the cluster in a loop, looking for changes to either store or set on nodes. Liveness is achieved by running as a Kubernetes pod with `N` replicas. Each replica is responsible for `1/N` of the nodes in the cluster. If one of the replicas goes down, the remaining replicas will adjust their `1/N` partitions to cover all nodes on their next iteration through the nodes. Consistency is eventual, we can expect a short delay between a node entering a cluster and the metadata being set on the node. Similarly, we can expect a short delay between someone modifying the metadata on a node and our service storing the updated metadata. The delay is dependent on the number of replicas `N` and the number of nodes in the cluster, but is generally expected to be sub-minute. Note that we use a StatefulSet so that our replicas have an index that's available, but the service itself is stateless and the replicas are interchangeable. See [#12](https://github.com/xanderdunn/kube-state-rs/issues/12).
+# High Level Design
+We have two services. One stores versioned transactions on node addition or deletion. The other service processes these transactions in a FIFO manner. We achieve: Arbitrarily horizontally scalable, highly available, arbitrarily replicable, idempotent versioned transactions, eventual consistency, per-node parallelism (per-node leader election) across a FIFO queue of transactions, stateless services. Relies on the strong consistency of Kubernetes ConfigMaps, which use RAFT-based etcd.
 
-### Setup
+### Service: Watcher
+- Node Added Event
+    - Create a ConfigMap transaction with the name `<NODE_NAME>.<NODE_RESOURCE_VERSION>.added`, in the `TRANSACTION_NAMESPACE`.
+- Node Deleted Event
+    - Store all labels in a ConfigMap transaction with name `<NODE_NAME>.<NODE_RESOURCE_VERSION>.deleted`, in the `TRANSACTION_NAMESPACE`.
+
+Replicas of the Watcher service provide redundant work to ensure liveness.
+
+### Service: Transaction Processor
+- Loop
+    - 1: Get all ConfigMaps in the `TRANSACTION_NAMESPACE`
+    - 2: Choose a random node to process from the list of transactions.
+    - Leader election using a lease lock with that node’s name
+        - Lease successful
+            - Sort the transactions for this node by ResourceVersion, process the one with the smallest ResourceVersion.
+                - If it's a transaction.deleted
+                   - If there does not already exist a ConfigMap named `<NODE_NAME>` in the `NODE_METADATA_NAMESPACE`, create one with all labels from the node, add the label `labels_restored: <RESOURCE_VERSION>`.
+                   - If there already exists a ConfigMap named `<NODE_NAME>` in the `NODE_METADATA_NAMESPACE`, replace it if `labels_restored` is present in the node's labels. If it's not present, do nothing. This is to prevent erasing our stored labels if the node was rapidly added and then deleted before we could restore the saved labels.
+                - If it's a transaction.added, read all labels from the ConfigMap named `<NODE_NAME>` in the `NODE_METADATA_NAMESPACE`. Replace all labels on the node. If the node no longer exists, simply delete the transaction. If there is no ConfigMap for this node, simply delete the transaction.
+            - If successfully processed, delete this particular transaction ConfigMap. Go to 1.
+        - Lease failed. Go to 2.
+
+Replicating the Transaction Processor service provides both horizontal scaling and liveness. Each replica does non-overlapping work to process the transactions recorded by the Watcher.
+
+### Potential Issues:
+- There is a time period after adding a node where it is not safe to make edits to the labels on that node because they could be overwritten by the Transaction Processor until it has processed the `transaction.added` for that node, restoring all stored labels.
+- We are potentially abusing the intended usage of ConfigMap and Lease here. We could have 5,000 different ConfigMaps and Leases in worst case scenario. This is within the limits imposed by Kubernetes, but may produce a lot of network traffic for the Kubernetes API. See [#3](https://github.com/xanderdunn/kube-state-rs/issues/3) for moving to a proper database such as Redis.
+
+### Edge Cases:
+- We have a node that exists long enough to accumulate labels. We rapidly delete it, add it back, and then delete it again, all before the labels could be restored. So we will have a non-empty transaction.deleted, then a transaction.added, and then an empty transaction.deleted. The first transaction will successfully store all labels. The second transaction will fail to restore labels because by the time it's processed the node has been deleted again. The third transaction will be thrown out because it has no `labels_restored`, thus preventing us from losing all of our stored labels.
+- A label is changed immediately before the node is deleted. This will be successfully preserved in the `transaction.deleted` because 
+- A label is changed immediately after a node is created, before the label restoration occurs. Any label changes prior to the label restoration will be overwritten when the Transaction Processor processes the `transaction.added` for that node.
+
+## Setup
 - Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - [Install minikube](https://minikube.sigs.k8s.io/docs/start/)
 
-### Build
+## Build
 - `cargo build`
 
-### Lint
+## Lint
 - `./lint.sh`
 
-### Test
+## Test
 - `cargo test`
 
-### Example Local Dev Usage
+## Example Local Dev Usage
 Here is some example usage of the binary:
 - Run the binary: `cargo run`
 - Create a node:
@@ -48,35 +81,27 @@ echo '{
 - Add the node back to the cluster with the same command as above.
 - See that the labels have been restored on the node: `kubectl get nodes my-new-node --show-labels`
 
-### Assumptions
+## Assumptions
 - It's important when we deploy this that we make multiple nodes across different regions available to the service, and that region is set in the key `kubernetes.io/hostname`.
-- For this implementation I assume that node labels can be modified by anyone from anywhere at anytime. If we were to instead apply all label changes through a particular pod service, this problem would be much easier to solve. That service could store the metadata, and a separate service could trigger applying the metadata to the node by reading from storage.
-- This repo uses a local minikube to run integration tests with `cargo test` both locally for dev and in GitHub Action CI.
-- This service assumes that every node has a `metadata.name`, and it assumes that the name will be a unique identifier. Suppose unique node names `node-1...node-10000`. I assume that when `node-n` leaves the cluster, we can expect `node-n` to return to the cluster, rather than always returning to the cluster with a new identifier, such as `node-10001`. If that's not the case, then we need a zookeeper strategy to apply labels to at most one node, regardless of node identifier.
-- We assume that the frequency of node metadata changes is approximately the same across all nodes. If it weren't then we might want to switch from a static `1/N` partitioning strategy to a dynamic partitioning strategy.
-- [Kubernetes ConfigMaps](https://kubernetes.io/docs/concepts/configuration/configmap/) were chosen as the persistent storage mechanism here because it's a simple, built-in key-value store that works for this purpose. We create one `ConfigMap` for each node. We assume that the creation and replacement of `ConfigMap`s is cheap, and that any particular node will have a relatively small number of labels (not hundreds or thousands of labels per node).
-- We assume a label should be set on a node only if the label is missing. If the label is already set, we do not overwrite it.
-- There is no mechanism implemented for deleting old, non-empty `ConfigMap` data, for example when a node is deleted forever and will not be re-entering the cluster. Hence, the `ConfigMap`s will accumulate. We will eventually want some way of deleting old data.
+- Node labels can be modified by anyone from anywhere at anytime. If we were to instead apply all label changes through a particular pod service with an exposed API, this problem would be much easier to solve. That service could store the metadata, and a separate service could trigger applying the metadata to the node by reading from storage. See [#6](https://github.com/xanderdunn/kube-state-rs/issues/6) for details.
+- Every node has a `metadata.name`, and it assumes that the name will be a unique identifier. Suppose unique node names `node-1...node-5000`. I assume that when `node-n` leaves the cluster, we can expect `node-n` to return to the cluster, rather than always returning to the cluster with a new identifier, such as `node-5001`. If that's not the case, then we need a zookeeper strategy to apply labels to at most one node, regardless of node identifier.
+- The frequency of node metadata changes is approximately the same across all nodes.
+- One ConfigMap per node is used for storage. Any particular node will have a relatively small number of labels (not hundreds or thousands of labels per node).
 - A node label key might contain characters `[-._a-zA-Z0-9\/]+`, which is a superset of the characters allowed in a `ConfigMap` key: `[-._a-zA-Z0-9]+`. For example, the label key `beta.kubernetes.io/os` is not compatible with storage as a key in a `ConfigMap`. As a workaround, we encode all slashes as the reserved token `---SLASH---` when stored as keys in the `ConfigMap` and then decode those tokens into `/` when restoring labels.
-- We run this service as a Docker containerized pod with multiple replicas.
-- Up to 40,000 nodes in a cluster.
-- Assume that we have the replicas of this service distributed across data centers, regions, zones, geographical areas, etc.
+- Up to 5,000 nodes in a cluster. More nodes will be managed with cluster federation.
 - We want 99.9% liveness. Losing a label change is to be avoided with high certainty.
-- A delay of several minutes in restoring latest labels to a node should be unlikely but is not a big problem.
-- We aren't dealing with security concerns at this level of the stack.
-- We expect strong consistency from Kubernetes, ConfigMaps, and etcd. When you read a ConfigMap after writing to it, you can expect to get the value you wrote. We expect Kubernetes `POST`, `PUT`, and `DELETE` are atomic. The etcd datastore ensures that these operations either fully succeed or fully fail, maintaining consistency.
-- If a change to node metadata is made seconds before the node is deleted, the change can be lost. We assume this is acceptable. If label modifications moments before deletion are expected to happen in production, an alternate implementation will be required, see [#6](https://github.com/xanderdunn/kube-state-rs/issues/6).
+- `ResourceVersion` is monotonically increasing.
+- Restoring labels to Nodes only succeeds if the ResourceVersion we expect is the actual ResourceVersion at the time our change is applied by etcd. If a Node is being rapidly modified by other services after it has been added to the cluster, it will take time for our Transaction Processor to restore labels to that Node.
+- Strong consistency from the Kubernetes API, ConfigMaps, and etcd. When we read a ConfigMap after writing to it, we can expect to get the value that was written. We expect Kubernetes `POST`, `PUT`, and `DELETE` are atomic. The etcd datastore ensures that these operations either fully succeed or fully fail, maintaining consistency.
 - Idempotency
-    - Every time a label is set on a node, all labels are set, replacing all labels on the node. This includes a `label_version`, which is incremented each time there is a change in the labels.
-    - Suppose a node is brought back into a cluster with a non-empty label set. If there is a missing or outdated `label_version`, all labels will be replaced. If it has a newer `label_version` than what we have in the DB, all labels in the DB will be replaced with what's on the node.
-    - Suppose the node has the same `label_version` as what's in the DB, but the labels are different. The node's labels will be completely replaced with what's in the DB.
-    - Because transactions are idempotent, we could have multiple replicas operating on the same partition of nodes to achieve 0 downtime.
+    - Every time a label is set on a node, all labels are set, replacing all labels on the node. This includes a `labels_restored` label, which holds the ResourceVersion of the node when its labels were stored.
+    - Suppose a node is brought back into a cluster with a non-empty label set. These labels will be replaced with what is stored.
 
-### Fault Tolerance
+## Fault Tolerance
 We want to achieve liveness and eventual consistency in the face of:
-- Crash: The service crashes. We have many replicas, so when one crashes another will take over. In addition, we have automatic restart.
-- Transient: A particular node fails, and then returns to working. In this case it could be possible that an older `label_version` gets applied after a newer version. This will quickly be corrected on the next iteration of the nodes. Additionally, because all node label changes are idempotent, applying the same `label_version` more than once produces the same result.
-- Permanent: In this case some other replica will eventually be chosen. Ideally a liveness and readiness check would fail and Kubernetes would replace this node.
-- Hardware: A node's hardware dies. Kubernetes should remove this replica and replace it. Kubernetes node metadata updates are atomic, so any operation should completely succeed or completely fail.
-- Network: This could be considered a crash or transient failure. Label updates both on nodes and in storage are atomic and idempotent.
-- Response: Stale information should not occur because etcd has strong consistency guarantee. If it were to happen, it will be fixed as soon as current information is available.
+- Crash: The service crashes. We have many replicas, so when one crashes another will take over. In addition, we have automatic restart. A transaction is removed from the queue only if it has fully succeeded. If a transaction is executed more than once, the result will be the same.
+- Transient: Suppose a replica of our Transaction Processor is trying to restore labels to a node and it stalls, takes much longer than usual for some reason, but eventually succeeds. During that stall, some other replica may have already applied that change, as well as several more recent changes in the queue. When applying changes to Node metadata or ConfigMaps, the change succeeds only if the object's ResourceVersion is what we expect. In this scenario the replica with the transient fault will have an outdated ResourceVersion so no change will occur, the latest change will remain.
+- Permanent: In this case some other replica will eventually be chosen. A liveness and readiness check will fail and Kubernetes will replace this node.
+- Hardware: A node's hardware dies. Kubernetes will remove this replica and replace it. Kubernetes node metadata updates are atomic, so any operation should completely succeed or completely fail.
+- Network: This could be considered a crash or transient failure. Label updates both on Nodes and on ConfigMaps are atomic and idempotent.
+- Response: Stale information should not occur because etcd has a strong consistency guarantee.
