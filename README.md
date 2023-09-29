@@ -28,7 +28,7 @@ Replicas of the Watcher service provide redundant work to ensure liveness.
             - If successfully processed, delete this particular transaction ConfigMap. Go to 1.
         - Lease failed. Go to 2.
 
-Replicating the Transaction Processor service provides both horizontal scaling and liveness. Each replica does non-overlapping work to process the transactions recorded by the Watcher.
+Replicating the Transaction Processor service provides both horizontal scaling and high availability. Each replica does non-overlapping work to process the transactions recorded by the Watcher.
 
 ### Potential Issues:
 - There is a time period after adding a node where it is not safe to make edits to the labels on that node because they could be overwritten by the Transaction Processor until it has processed the `transaction.added` for that node, restoring all stored labels.
@@ -89,7 +89,7 @@ echo '{
 - One ConfigMap per node is used for storage. Any particular node will have a relatively small number of labels (not hundreds or thousands of labels per node).
 - A node label key might contain characters `[-._a-zA-Z0-9\/]+`, which is a superset of the characters allowed in a `ConfigMap` key: `[-._a-zA-Z0-9]+`. For example, the label key `beta.kubernetes.io/os` is not compatible with storage as a key in a `ConfigMap`. As a workaround, we encode all slashes as the reserved token `---SLASH---` when stored as keys in the `ConfigMap` and then decode those tokens into `/` when restoring labels.
 - Up to 5,000 nodes in a cluster. More nodes will be managed with cluster federation.
-- We want 99.9% liveness. Losing a label change is to be avoided with high certainty.
+- We want 99.9% availability. Losing a label change is to be avoided with high certainty.
 - `ResourceVersion` is monotonically increasing.
 - Restoring labels to Nodes only succeeds if the ResourceVersion we expect is the actual ResourceVersion at the time our change is applied by etcd. If a Node is being rapidly modified by other services after it has been added to the cluster, it will take time for our Transaction Processor to restore labels to that Node.
 - Strong consistency from the Kubernetes API, ConfigMaps, and etcd. When we read a ConfigMap after writing to it, we can expect to get the value that was written. We expect Kubernetes `POST`, `PUT`, and `DELETE` are atomic. The etcd datastore ensures that these operations either fully succeed or fully fail, maintaining consistency.
@@ -98,7 +98,7 @@ echo '{
     - Suppose a node is brought back into a cluster with a non-empty label set. These labels will be replaced with what is stored.
 
 ## Fault Tolerance
-We want to achieve liveness and eventual consistency in the face of:
+We want to achieve availability and eventual consistency in the face of:
 - Crash: The service crashes. We have many replicas, so when one crashes another will take over. In addition, we have automatic restart. A transaction is removed from the queue only if it has fully succeeded. If a transaction is executed more than once, the result will be the same.
 - Transient: Suppose a replica of our Transaction Processor is trying to restore labels to a node and it stalls, takes much longer than usual for some reason, but eventually succeeds. During that stall, some other replica may have already applied that change, as well as several more recent changes in the queue. When applying changes to Node metadata or ConfigMaps, the change succeeds only if the object's ResourceVersion is what we expect. In this scenario the replica with the transient fault will have an outdated ResourceVersion so no change will occur, the latest change will remain.
 - Permanent: In this case some other replica will eventually be chosen. A liveness and readiness check will fail and Kubernetes will replace this node.

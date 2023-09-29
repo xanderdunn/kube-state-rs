@@ -38,6 +38,11 @@ metadata:
   name: kube-state-rs-watcher
 spec:
   replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: kube-state-rs-watcher
@@ -72,3 +77,20 @@ spec:
         - name: kube-state-rs-watcher
           image: kube-state-rs-watcher
           imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              cpu: "0.5"
+              memory: 500Mi
+            requests:
+              cpu: "0.2"
+              memory: 200Mi
+---
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: kube-state-rs-watcher-pdb
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: kube-state-rs-watcher
