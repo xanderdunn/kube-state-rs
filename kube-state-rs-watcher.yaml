@@ -85,7 +85,7 @@ spec:
               cpu: "0.2"
               memory: 200Mi
 ---
-apiVersion: policy/v1beta1
+apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: kube-state-rs-watcher-pdb
