@@ -1,112 +1,30 @@
-// System
-use std::collections::BTreeMap;
-
-// Third Party
-use anyhow::anyhow;
-use k8s_openapi::api::core::v1::{ConfigMap, Node};
-use kube::{
-    api::{
-        Api, DeleteParams, ListParams, ObjectMeta, PartialObjectMetaExt, Patch, PatchParams,
-        PostParams,
-    },
-    Client,
-};
-use serde_json::json;
-use tokio::task;
-use tracing::{debug, info, warn};
-
 // Local
 pub mod processor;
 pub mod utils;
 pub mod watcher;
-use utils::{code_key_slashes, SLASH_TOKEN};
 
-/// The monotonically increasing revision count of the labels on the node. +1 every time the labels
-/// stored in the ConfigMap change for a node.
-/// This is updated on the ConfigMap every time labels are stored.
-const LABEL_VERSION: &str = "label_version";
-/// The ResourceVersion of the node as last seen by the ConfigMap.
-/// This is updated on the ConfigMap every time labels are stored or restored.
-const RESOURCE_VERSION: &str = "resource_version";
+#[cfg(test)]
+mod tests {
+    // System
+    use std::collections::BTreeMap;
 
-enum ConfigMapState {
-    None,  // A ConfigMap does not exist for this node
-    Empty, // Exists but no labels on it (still has a LabelVersion)
-    NonEmpty,
-}
+    // Third Party
+    use k8s_openapi::api::core::v1::{ConfigMap, Node};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use kube::api::{PartialObjectMetaExt, Patch, PatchParams, PostParams};
+    use kube::{
+        api::{Api, ListParams},
+        Client,
+    };
+    use rand::{distributions::Alphanumeric, seq::IteratorRandom, thread_rng, Rng, SeedableRng};
+    use serde_json::json;
+    use serial_test::serial;
+    use tracing::debug;
 
-enum NodeState {
-    NoLabels,
-    LabelsNoVersion,
-    LabelsAndVersion,
-}
+    // Local
+    use crate::utils::init_tracing;
 
-enum LabelVersionComparison {
-    Equal,      // The node and ConfigMap have the same label_version
-    NodeHigher, // The node has a higher label_version than the ConfigMap
-    ConfigMapHigher,
-}
-
-enum ResourceVersionComparison {
-    Equal,
-    NodeHigher,
-    ConfigMapHigher,
-}
-
-/// This service listens to all Kubernetes node events and will:
-/// - Save all node metadata labels when a node is deleted.
-/// - Restore all node metadata labels when a node is added back to the cluster with the same name.
-/// This service uniquely identifies nodes by name.
-pub struct NodeLabelPersistenceService {
-    client: Client,
-    namespace: String,
-}
-
-impl NodeLabelPersistenceService {
-    pub async fn new(namespace: &str, client: &Client) -> Result<Self, anyhow::Error> {
-        info!("Creating NodeLabelPersistenceService");
-        Ok(NodeLabelPersistenceService {
-            client: client.clone(),
-            namespace: namespace.to_string(),
-        })
-    }
-
-    /// A convenience class method that returns all labels stored in the ConfigMap for a given node
-    /// name.
-    pub async fn get_config_map_labels(
-        client: &Client,
-        node_name: &str,
-        namespace: &str,
-    ) -> Result<Option<BTreeMap<String, String>>, anyhow::Error> {
-        let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-
-        match config_maps.get(node_name).await {
-            Ok(config_map) => match config_map.data {
-                Some(config_map_data) => {
-                    let mut config_map_data = config_map_data.clone();
-                    code_key_slashes(&mut config_map_data, false);
-                    Ok(Some(config_map_data))
-                }
-                None => Ok(None),
-            },
-            Err(_) => Ok(None),
-        }
-    }
-
-    /// A convenience class method to get all of the labels on a node.
-    pub async fn get_node_labels(
-        client: &Client,
-        node_name: &str,
-    ) -> Result<Option<BTreeMap<String, String>>, anyhow::Error> {
-        let nodes: Api<Node> = Api::all(client.clone());
-
-        match nodes.get(node_name).await {
-            Ok(node) => Ok(node.metadata.labels),
-            Err(_) => Ok(None),
-        }
-    }
-
-    /// A convenience class method to set label values on a node.
+    /// Set label values on a node.
     pub async fn set_node_labels(
         client: &Client,
         node_name: &str,
@@ -129,7 +47,7 @@ impl NodeLabelPersistenceService {
         Ok(())
     }
 
-    /// A convenience class method to remove the label on a node.
+    /// Remove the label on a node.
     pub async fn delete_node_label(
         client: &Client,
         node_name: &str,
@@ -154,6 +72,7 @@ impl NodeLabelPersistenceService {
         Ok(())
     }
 
+    /// Add a label or update its value if it already exists.
     pub async fn add_or_update_node_label(
         client: &Client,
         node_name: &str,
@@ -178,714 +97,6 @@ impl NodeLabelPersistenceService {
             .await?;
         Ok(())
     }
-
-    /// Given a set of node labels and stored labels, add the stored_labels to the node.
-    /// This does not overwrite.
-    async fn restore_node_labels(
-        client: &Client,
-        node_name: &str,
-        node_labels: Option<&BTreeMap<String, String>>,
-        stored_labels: Option<&BTreeMap<String, String>>,
-    ) -> Result<(), anyhow::Error> {
-        let node_labels: BTreeMap<String, String> = match node_labels {
-            Some(node_labels) => {
-                let mut node_labels = node_labels.clone();
-                node_labels.remove(RESOURCE_VERSION);
-                node_labels
-            }
-            None => BTreeMap::<String, String>::new(),
-        };
-        let mut new_labels = node_labels.clone();
-
-        let stored_labels = match stored_labels {
-            Some(stored_labels) => stored_labels.clone(),
-            None => BTreeMap::<String, String>::new(),
-        };
-
-        // Add missing keys
-        for (key, value) in stored_labels {
-            if key != RESOURCE_VERSION {
-                new_labels
-                    .entry(key.clone().replace(SLASH_TOKEN, "/")) // Decode keys with slashes
-                    .or_insert(value.clone());
-            }
-        }
-
-        if new_labels.len() > node_labels.len() {
-            let patch = json!({ "metadata": { "labels": new_labels }});
-            let nodes: Api<Node> = Api::all(client.clone());
-            nodes
-                .patch(node_name, &PatchParams::default(), &Patch::Merge(&patch))
-                .await
-                .map_err(|e| anyhow!(e).context("Failed to patch node"))?;
-        }
-        Ok(())
-    }
-
-    /// Given a set of node labels, store them in the ConfigMap for the first time.
-    /// This sets the LABEL_VERSION to 1 on both the node and the ConfigMap.
-    /// This sets the RESOURCE_VERSION on the ConfigMap.
-    async fn create_stored_labels(
-        client: &Client,
-        node_name: &str,
-        node_labels: &BTreeMap<String, String>,
-        namespace: &str,
-    ) -> Result<(), anyhow::Error> {
-        let mut node_labels = node_labels.clone();
-        // Add label_version to ConfigMap
-        node_labels.insert(LABEL_VERSION.to_string(), "1".to_string());
-        // Add resource_version to ConfigMap
-        node_labels.insert(
-            RESOURCE_VERSION.to_string(),
-            node_labels
-                .get(RESOURCE_VERSION)
-                .unwrap_or(&"0".to_string())
-                .to_string(),
-        );
-        code_key_slashes(&mut node_labels, true);
-        let data = ConfigMap {
-            data: Some(node_labels),
-            metadata: ObjectMeta {
-                name: Some(node_name.to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-        config_maps
-            .create(&Default::default(), &data)
-            .await
-            .map_err(|e| anyhow!(e).context("Failed to create config map"))?;
-
-        // Add label_version to node. We should not crash if this fails because we have already
-        // safely stored the labels in the ConfigMap.
-        // TODO: Maybe I should surface all errors and print them as warnings inside handle_nodes
-        // rather than handling this one here?
-        let _ = Self::add_or_update_node_label(client, node_name, LABEL_VERSION, "1", "default")
-            .await
-            .map_err(|e| {
-                warn!(
-                    "create_stored_label failed to update LABEL_VERSION on node {}: {:?}",
-                    node_name, e
-                );
-            });
-        Ok(())
-    }
-
-    /// Given a set of node labels, update the stored labels in the `ConfigMap`.
-    /// It will replace all labels in the `ConfigMap`
-    /// `node_labels` must be non-empty.
-    /// This overwrites.
-    /// This increments the LABEL_VERSION +1 on the ConfigMap and sets it on the node.
-    /// This updates the RESOURCE_VERSION on the ConfigMap.
-    async fn update_stored_labels(
-        client: &Client,
-        node_name: &str,
-        node_resource_version: &str,
-        node_labels: &BTreeMap<String, String>,
-        namespace: &str,
-    ) -> Result<(), anyhow::Error> {
-        assert!(!node_labels.is_empty());
-        let mut node_labels = node_labels.clone();
-
-        let label_version = node_labels
-            .get(LABEL_VERSION)
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0)
-            + 1;
-
-        // Increment the label_version on the ConfigMap
-        node_labels.insert(LABEL_VERSION.to_string(), label_version.to_string());
-        // Update the resource_version on the ConfigMap
-        node_labels.insert(
-            RESOURCE_VERSION.to_string(),
-            node_resource_version.to_string(),
-        );
-
-        let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-
-        if node_labels.len() == 2 {
-            // Only the LABEL_VERSION and RESOURCE_VERSION are set on the node
-            Self::delete_config_map(client, node_name, namespace).await?;
-            Self::delete_node_label(client, node_name, LABEL_VERSION, "kube-state-rs").await?;
-        } else {
-            code_key_slashes(&mut node_labels, true);
-            let data = ConfigMap {
-                data: Some(node_labels.clone()),
-                metadata: ObjectMeta {
-                    name: Some(node_name.to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-
-            config_maps
-                .replace(node_name, &PostParams::default(), &data)
-                .await
-                .map_err(|e| anyhow!(e).context("Failed to update config map"))?;
-
-            // Update the label_version on the Node
-            // TODO: Maybe I should surface all errors and print them as warnings inside handle_nodes
-            // rather than handling this one here?
-            let _ = Self::add_or_update_node_label(
-                client,
-                node_name,
-                LABEL_VERSION,
-                &label_version.to_string(),
-                "default",
-            )
-            .await
-            .map_err(|e| {
-                warn!(
-                    "create_stored_label failed to update LABEL_VERSION on node {}: {:?}",
-                    node_name, e
-                );
-            });
-        }
-
-        Ok(())
-    }
-
-    /// This updates the RESOURCE_VERSION we store to record the most recent version of the node
-    /// that's been seen by the ConfigMap.
-    async fn update_config_map_resource_version(
-        client: &Client,
-        config_map: &ConfigMap,
-        new_resource_version: &str,
-    ) -> Result<(), anyhow::Error> {
-        let config_maps: Api<ConfigMap> = Api::namespaced(
-            client.clone(),
-            config_map
-                .metadata
-                .namespace
-                .as_deref()
-                .unwrap_or("default"),
-        );
-        let patch = Patch::Apply(json!({
-            "apiVersion": "v1",
-            "kind": "ConfigMap",
-            "data": {
-                RESOURCE_VERSION: new_resource_version
-            }
-        }));
-        // TODO: Prefer to specify the version rather than use .force() here
-        let params = PatchParams::apply(config_map.metadata.name.as_deref().unwrap()).force();
-        config_maps
-            .patch(
-                config_map.metadata.name.as_deref().unwrap(),
-                &params,
-                &patch,
-            )
-            .await?;
-        Ok(())
-    }
-
-    /// It's important that the config map we want to delete here actually exists or this will throw
-    /// an error
-    async fn delete_config_map(
-        client: &Client,
-        node_name: &str,
-        namespace: &str,
-    ) -> Result<(), anyhow::Error> {
-        let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-        config_maps
-            .delete(node_name, &DeleteParams::default())
-            .await
-            .map_err(|e| anyhow!(e).context("Failed to update config map"))?;
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn handle_node(
-        client: &Client,
-        namespace: &str,
-        node: &Node,
-        config_map: Result<ConfigMap, kube::Error>,
-        config_map_state: ConfigMapState,
-        node_state: NodeState,
-        label_version_cmp: LabelVersionComparison,
-        resource_version_cmp: ResourceVersionComparison,
-    ) -> Result<(), anyhow::Error> {
-        match (config_map_state, node_state) {
-            (ConfigMapState::None, NodeState::NoLabels) => {
-                debug!("1: {} Do nothing", node.metadata.name.as_ref().unwrap());
-                Ok(())
-            }
-            (ConfigMapState::None, NodeState::LabelsNoVersion) => {
-                debug!(
-                    "2: {} Create ConfigMap + Store all labels from Node + set LabelVersion to 1",
-                    node.metadata.name.as_ref().unwrap()
-                );
-                Self::create_stored_labels(
-                    client,
-                    node.metadata.name.as_ref().unwrap(),
-                    node.metadata.labels.as_ref().unwrap(),
-                    namespace,
-                )
-                .await?;
-                Ok(())
-            }
-            (ConfigMapState::None, NodeState::LabelsAndVersion) => {
-                debug!(
-                    "3: {} Create ConfigMap + Store all labels from Node + set LabelVersion to 1",
-                    node.metadata.name.as_ref().unwrap()
-                );
-                warn!("Encountered node {:?} with a label version, but there was no ConfigMap associated with that node. This is not expected during normal operation.", node.metadata.name);
-                Self::create_stored_labels(
-                    client,
-                    node.metadata.name.as_ref().unwrap(),
-                    node.metadata.labels.as_ref().unwrap(),
-                    namespace,
-                )
-                .await?;
-                Ok(())
-            }
-            (ConfigMapState::Empty, NodeState::NoLabels) => {
-                debug!(
-                    "4: {} Delete the ConfigMap",
-                    node.metadata.name.as_ref().unwrap()
-                );
-                Self::delete_config_map(client, node.metadata.name.as_ref().unwrap(), namespace)
-                    .await?;
-                Ok(())
-            }
-            (ConfigMapState::Empty, NodeState::LabelsNoVersion) => {
-                debug!(
-                    "5: {} Store all labels from Node + increment LabelVersion",
-                    node.metadata.name.as_ref().unwrap()
-                );
-                Self::update_stored_labels(
-                    client,
-                    node.metadata.name.as_ref().unwrap(),
-                    node.metadata.resource_version.as_ref().unwrap(),
-                    node.metadata.labels.as_ref().unwrap(),
-                    namespace,
-                )
-                .await?;
-                Ok(())
-            }
-            (ConfigMapState::Empty, NodeState::LabelsAndVersion) => {
-                debug!(
-                    "6: {} <This should not happen> Store all labels from the node into the ConfigMap"
-                , node.metadata.name.as_ref().unwrap());
-                Self::update_stored_labels(
-                    client,
-                    node.metadata.name.as_ref().unwrap(),
-                    node.metadata.resource_version.as_ref().unwrap(),
-                    node.metadata.labels.as_ref().unwrap(),
-                    namespace,
-                )
-                .await?;
-                Ok(())
-            }
-            (ConfigMapState::NonEmpty, NodeState::NoLabels) => {
-                debug!(
-                    "7: {} Restore all labels to Node + Update ResourceVersion",
-                    node.metadata.name.as_ref().unwrap()
-                );
-                Self::restore_node_labels(
-                    client,
-                    node.metadata.name.as_ref().unwrap(),
-                    node.metadata.labels.as_ref(),
-                    config_map.as_ref().unwrap().data.as_ref(),
-                )
-                .await?;
-                Self::update_config_map_resource_version(
-                    client,
-                    &config_map.unwrap(),
-                    node.metadata.resource_version.as_ref().unwrap(),
-                )
-                .await?;
-                Ok(())
-            }
-            (ConfigMapState::NonEmpty, NodeState::LabelsNoVersion) => {
-                debug!("8: {} Store any labels on node not in ConfigMap, Restore any labels in the ConfigMap not on the Node", node.metadata.name.as_ref().unwrap());
-                Self::restore_node_labels(
-                    client,
-                    node.metadata.name.as_ref().unwrap(),
-                    node.metadata.labels.as_ref(),
-                    config_map.unwrap().data.as_ref(),
-                )
-                .await?;
-                Self::update_stored_labels(
-                    client,
-                    node.metadata.name.as_ref().unwrap(),
-                    node.metadata.resource_version.as_ref().unwrap(),
-                    node.metadata.labels.as_ref().unwrap(),
-                    namespace,
-                )
-                .await?;
-                Ok(())
-            }
-            (ConfigMapState::NonEmpty, NodeState::LabelsAndVersion) => {
-                match (label_version_cmp, resource_version_cmp) {
-                    (LabelVersionComparison::Equal, ResourceVersionComparison::Equal) => {
-                        debug!("9: {} Do nothing", node.metadata.name.as_ref().unwrap());
-                        Ok(())
-                    }
-                    (LabelVersionComparison::Equal, ResourceVersionComparison::NodeHigher) => {
-                        // Someone could've modified the labels without incrementing the LabelVersion
-                        debug!(
-                            "10: {} Update ConfigMap with node labels if there are any changes + Store updated ResourceVersion",
-                            node.metadata.name.as_ref().unwrap()
-                        );
-                        // It's important I update the stored labels here only if the node's labels
-                        // are different from the stored labels. Otherwise it will increment the
-                        // node's ResourceVersion and cause an infinite loop of updates.
-                        let node_labels: Option<BTreeMap<String, String>> = {
-                            match node.metadata.labels.clone() {
-                                Some(mut labels) => {
-                                    labels.remove(RESOURCE_VERSION);
-                                    Some(labels)
-                                }
-                                None => None,
-                            }
-                        };
-                        let config_map_labels_decoded: Option<BTreeMap<String, String>> =
-                            match config_map.as_ref().unwrap().data.clone() {
-                                Some(data) => {
-                                    let mut data = data.clone();
-                                    code_key_slashes(&mut data, false);
-                                    data.remove(RESOURCE_VERSION);
-                                    Some(data)
-                                }
-                                None => None,
-                            };
-                        debug!("node labels: {:?}", node_labels);
-                        debug!("config map labels: {:?}", config_map_labels_decoded);
-                        if node_labels != config_map_labels_decoded {
-                            Self::update_stored_labels(
-                                client,
-                                node.metadata.name.as_ref().unwrap(),
-                                node.metadata.resource_version.as_ref().unwrap(),
-                                node.metadata.labels.as_ref().unwrap(),
-                                namespace,
-                            )
-                            .await?;
-                        } else {
-                            Self::update_config_map_resource_version(
-                                client,
-                                &config_map.unwrap(),
-                                node.metadata.resource_version.as_ref().unwrap(),
-                            )
-                            .await?;
-                        }
-                        Ok(())
-                    }
-                    (LabelVersionComparison::Equal, ResourceVersionComparison::ConfigMapHigher) => {
-                        // This means that the node was deleted and labels were restored without updating the ResourceVersion in the ConfigMap
-                        debug!("11: <This should not happen!> Store any labels on node not in ConfigMap, Restore any labels in the ConfigMap not on the Node");
-                        warn!("Both the node and the ConfigMap have labels and equal label version, but the ConfigMap has a higher ResourceVersion. This means an incorrect ResourceVersion was stored in the COnfig, or the node was removed from the cluster and then re-added, but the ConfigMap's ResourceVersion was not updated. This is not expected to occur during normal operation.");
-                        Self::restore_node_labels(
-                            client,
-                            node.metadata.name.as_ref().unwrap(),
-                            node.metadata.labels.as_ref(),
-                            config_map.unwrap().data.as_ref(),
-                        )
-                        .await?;
-                        Self::update_stored_labels(
-                            client,
-                            node.metadata.name.as_ref().unwrap(),
-                            node.metadata.resource_version.as_ref().unwrap(),
-                            node.metadata.labels.as_ref().unwrap(),
-                            namespace,
-                        )
-                        .await?;
-                        Ok(())
-                    }
-                    (LabelVersionComparison::NodeHigher, ResourceVersionComparison::Equal) => {
-                        debug!(
-                            "12: Store: Overwrite ConfigMap labels + Store updated LabelVersion"
-                        );
-                        Self::update_stored_labels(
-                            client,
-                            node.metadata.name.as_ref().unwrap(),
-                            node.metadata.resource_version.as_ref().unwrap(),
-                            node.metadata.labels.as_ref().unwrap(),
-                            namespace,
-                        )
-                        .await?;
-                        Ok(())
-                    }
-                    (LabelVersionComparison::NodeHigher, ResourceVersionComparison::NodeHigher) => {
-                        // Someone incremented the label version
-                        debug!("13: Store: Overwrite ConfigMap labels + Store ResourceVersion in ConfigMap");
-                        Self::update_stored_labels(
-                            client,
-                            node.metadata.name.as_ref().unwrap(),
-                            node.metadata.resource_version.as_ref().unwrap(),
-                            node.metadata.labels.as_ref().unwrap(),
-                            namespace,
-                        )
-                        .await?;
-                        Ok(())
-                    }
-                    (
-                        LabelVersionComparison::NodeHigher,
-                        ResourceVersionComparison::ConfigMapHigher,
-                    ) => {
-                        // The node has been removed and added back to the cluster and also someone else incremented the label version
-                        debug!("14: Store: Overwrite ConfigMap labels + Store ResourceVersion in ConfigMap");
-                        Self::update_stored_labels(
-                            client,
-                            node.metadata.name.as_ref().unwrap(),
-                            node.metadata.resource_version.as_ref().unwrap(),
-                            node.metadata.labels.as_ref().unwrap(),
-                            namespace,
-                        )
-                        .await?;
-                        Ok(())
-                    }
-                    (LabelVersionComparison::ConfigMapHigher, ResourceVersionComparison::Equal) => {
-                        debug!("15: Restore: Overwrite node labels");
-                        // TODO: This does not overwrite but it should.
-                        Self::restore_node_labels(
-                            client,
-                            node.metadata.name.as_ref().unwrap(),
-                            node.metadata.labels.as_ref(),
-                            config_map.unwrap().data.as_ref(),
-                        )
-                        .await?;
-                        Ok(())
-                    }
-                    (
-                        LabelVersionComparison::ConfigMapHigher,
-                        ResourceVersionComparison::NodeHigher,
-                    ) => {
-                        debug!(
-                            "16: Restore: Overwrite node labels + Store ResourceVersion in ConfigMap"
-                        );
-                        // TODO: This does not overwrite but it should.
-                        Self::restore_node_labels(
-                            client,
-                            node.metadata.name.as_ref().unwrap(),
-                            node.metadata.labels.as_ref(),
-                            config_map.as_ref().unwrap().data.as_ref(),
-                        )
-                        .await?;
-                        Self::update_config_map_resource_version(
-                            client,
-                            &config_map.unwrap(),
-                            node.metadata.resource_version.as_ref().unwrap(),
-                        )
-                        .await?;
-                        Ok(())
-                    }
-                    (
-                        LabelVersionComparison::ConfigMapHigher,
-                        ResourceVersionComparison::ConfigMapHigher,
-                    ) => {
-                        // The node has been removed from the cluster and added back
-                        debug!(
-                            "17: Restore: Overwrite node labels + Store ResourceVersion in ConfigMap"
-                        );
-                        // TODO: This does not overwrite but it should.
-                        Self::restore_node_labels(
-                            client,
-                            node.metadata.name.as_ref().unwrap(),
-                            node.metadata.labels.as_ref(),
-                            config_map.as_ref().unwrap().data.as_ref(),
-                        )
-                        .await?;
-                        Self::update_config_map_resource_version(
-                            client,
-                            &config_map.unwrap(),
-                            node.metadata.resource_version.as_ref().unwrap(),
-                        )
-                        .await?;
-                        Ok(())
-                    }
-                }
-            }
-        }
-    }
-
-    async fn get_config_map_state(
-        config_map: &Result<ConfigMap, kube::Error>,
-    ) -> Result<ConfigMapState, anyhow::Error> {
-        match config_map {
-            Ok(config_map) => match config_map.data.clone() {
-                Some(data) => {
-                    if data.is_empty() {
-                        Ok(ConfigMapState::Empty)
-                    } else {
-                        Ok(ConfigMapState::NonEmpty)
-                    }
-                }
-                None => Ok(ConfigMapState::Empty),
-            },
-            Err(_) => Ok(ConfigMapState::None),
-        }
-    }
-
-    async fn get_node_state(node: &Node) -> Result<NodeState, anyhow::Error> {
-        let labels = &node.metadata.labels;
-        match labels {
-            Some(labels) => {
-                if labels.contains_key(LABEL_VERSION) {
-                    Ok(NodeState::LabelsAndVersion)
-                } else {
-                    Ok(NodeState::LabelsNoVersion)
-                }
-            }
-            None => Ok(NodeState::NoLabels),
-        }
-    }
-
-    async fn compare_label_version(
-        node: &Node,
-        config_map: &Result<ConfigMap, kube::Error>,
-    ) -> Result<LabelVersionComparison, anyhow::Error> {
-        let node_version: Option<&String> = node
-            .metadata
-            .labels
-            .as_ref()
-            .and_then(|labels| labels.get(LABEL_VERSION));
-
-        let config_map_version = {
-            match config_map {
-                Ok(config_map) => config_map
-                    .data
-                    .as_ref()
-                    .and_then(|data| data.get(LABEL_VERSION)),
-                Err(_) => None,
-            }
-        };
-
-        match (node_version, config_map_version) {
-            (Some(node_version), Some(config_map_version)) => {
-                Ok(match node_version.cmp(config_map_version) {
-                    std::cmp::Ordering::Equal => LabelVersionComparison::Equal,
-                    std::cmp::Ordering::Greater => LabelVersionComparison::NodeHigher,
-                    std::cmp::Ordering::Less => LabelVersionComparison::ConfigMapHigher,
-                })
-            }
-            (Some(_), None) => Ok(LabelVersionComparison::NodeHigher),
-            (None, Some(_)) => Ok(LabelVersionComparison::ConfigMapHigher),
-            _ => Ok(LabelVersionComparison::Equal),
-        }
-    }
-
-    async fn compare_resource_version(
-        node: &Node,
-        config_map: &Result<ConfigMap, kube::Error>,
-    ) -> Result<ResourceVersionComparison, anyhow::Error> {
-        let node_resource_version: Option<u64> = node
-            .metadata
-            .resource_version
-            .as_ref()
-            .and_then(|resource_version| resource_version.parse().ok());
-
-        let config_map_resource_version: Option<u64> = {
-            match config_map {
-                Ok(config_map) => match config_map.data.clone() {
-                    Some(data) => data
-                        .get(RESOURCE_VERSION)
-                        .and_then(|resource_version| resource_version.clone().parse().ok()),
-                    None => None,
-                },
-                Err(_) => None,
-            }
-        };
-
-        match (node_resource_version, config_map_resource_version) {
-            (Some(node_resource_version), Some(config_map_resource_version)) => Ok(
-                match node_resource_version.cmp(&config_map_resource_version) {
-                    std::cmp::Ordering::Equal => ResourceVersionComparison::Equal,
-                    std::cmp::Ordering::Greater => ResourceVersionComparison::NodeHigher,
-                    std::cmp::Ordering::Less => ResourceVersionComparison::ConfigMapHigher,
-                },
-            ),
-            (Some(_), None) => Ok(ResourceVersionComparison::NodeHigher),
-            (None, Some(_)) => Ok(ResourceVersionComparison::ConfigMapHigher),
-            (None, None) => Ok(ResourceVersionComparison::Equal),
-        }
-    }
-
-    /// Iterate over the nodes in the cluster looking for changed metadata to either store or
-    /// update on the nodes.
-    pub async fn handle_nodes(
-        &self,
-        num_ready_replicas: usize,
-        my_replica_id: usize,
-    ) -> Result<(), anyhow::Error> {
-        let nodes: Api<Node> = Api::all(self.client.clone());
-        let nodes_list = nodes.list(&ListParams::default()).await?;
-        let config_maps: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.namespace);
-
-        let mut handles = Vec::new();
-        let my_nodes = nodes_list
-            .items
-            .chunks(num_ready_replicas)
-            .nth(my_replica_id)
-            .unwrap_or(&[]);
-        debug!(
-            "replica_id {} of {}: I am responsible for {} of {} nodes",
-            my_replica_id,
-            num_ready_replicas - 1,
-            my_nodes.len(),
-            nodes_list.items.len(),
-        );
-        for node in my_nodes {
-            let node = node.clone();
-            let config_maps = config_maps.clone();
-            let client = self.client.clone();
-            let namespace = self.namespace.clone();
-            let handle = task::spawn(async move {
-                let node_name = node.metadata.name.as_ref().unwrap();
-                let config_map = config_maps.get(node_name).await;
-                let config_map_state = Self::get_config_map_state(&config_map).await?;
-                let node_state = Self::get_node_state(&node).await?;
-                let label_version_cmp = Self::compare_label_version(&node, &config_map).await?;
-                let resource_version_cmp =
-                    Self::compare_resource_version(&node, &config_map).await?;
-                Self::handle_node(
-                    &client,
-                    &namespace,
-                    &node,
-                    config_map,
-                    config_map_state,
-                    node_state,
-                    label_version_cmp,
-                    resource_version_cmp,
-                )
-                .await?;
-                Result::<(), anyhow::Error>::Ok(())
-            });
-            handles.push(handle);
-        }
-
-        let results: Result<Vec<_>, _> = futures::future::join_all(handles)
-            .await
-            .into_iter()
-            .collect();
-        match results {
-            Ok(_) => Ok(()),
-            Err(err) => Err(anyhow!(err)),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    // System
-    use std::collections::BTreeMap;
-
-    // Third Party
-    use k8s_openapi::api::core::v1::{ConfigMap, Node};
-    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-    use kube::api::PostParams;
-    use kube::{
-        api::{Api, ListParams},
-        Client,
-    };
-    use rand::{distributions::Alphanumeric, seq::IteratorRandom, thread_rng, Rng, SeedableRng};
-    use serial_test::serial;
-    use tracing::debug;
-
-    // Local
-    use super::{NodeLabelPersistenceService, LABEL_VERSION, RESOURCE_VERSION};
-    use crate::utils::init_tracing;
 
     /// A convenience function for asserting that the node's label value is correct.
     async fn assert_node_label_has_value(
@@ -968,7 +179,7 @@ mod tests {
         let value: String = format!("value_{}", random_value);
         let mut new_labels = BTreeMap::new();
         new_labels.insert(key.to_string(), value.clone());
-        NodeLabelPersistenceService::set_node_labels(&client, node_name, &new_labels, service_name)
+        set_node_labels(&client, node_name, &new_labels, service_name)
             .await
             .unwrap();
         assert_node_label_has_value(client.clone(), node_name, key, Some(&value)).await;
@@ -1128,7 +339,7 @@ mod tests {
             set_random_label(client.clone(), test_node_name, node_label_key, service_name)
                 .await
                 .unwrap();
-        NodeLabelPersistenceService::add_or_update_node_label(
+        add_or_update_node_label(
             &client,
             test_node_name,
             node_label_key,
@@ -1159,14 +370,9 @@ mod tests {
         //
         // 5. Delete the label on the node
         //
-        NodeLabelPersistenceService::delete_node_label(
-            &client,
-            test_node_name,
-            node_label_key,
-            service_name,
-        )
-        .await
-        .unwrap();
+        delete_node_label(&client, test_node_name, node_label_key, service_name)
+            .await
+            .unwrap();
         // The node should now have no labels
         let nodes: Api<Node> = Api::all(client.clone());
         // The node should not have the key that was deleted
@@ -1321,14 +527,9 @@ mod tests {
                             truth_node_labels
                                 .insert(node_name.clone(), (in_cluster, labels.clone()));
                             debug!("Action Completed: added label on node {}", node_name);
-                            NodeLabelPersistenceService::set_node_labels(
-                                &client,
-                                &node_name,
-                                &labels,
-                                service_name,
-                            )
-                            .await
-                            .unwrap();
+                            set_node_labels(&client, &node_name, &labels, service_name)
+                                .await
+                                .unwrap();
                         }
                     }
                 }
@@ -1351,14 +552,9 @@ mod tests {
                                 labels.remove(&label_key);
                                 truth_node_labels
                                     .insert(node_name.clone(), (in_cluster, labels.clone()));
-                                NodeLabelPersistenceService::delete_node_label(
-                                    &client,
-                                    &node_name,
-                                    &label_key,
-                                    service_name,
-                                )
-                                .await
-                                .unwrap();
+                                delete_node_label(&client, &node_name, &label_key, service_name)
+                                    .await
+                                    .unwrap();
                                 debug!(
                                     "Action Completed: deleted label {} on node {}",
                                     label_key, node_name
@@ -1398,14 +594,9 @@ mod tests {
                                     "Action Completed: changed label on node {} to {}",
                                     node_name, label_value
                                 );
-                                NodeLabelPersistenceService::set_node_labels(
-                                    &client,
-                                    &node_name,
-                                    &labels,
-                                    service_name,
-                                )
-                                .await
-                                .unwrap();
+                                set_node_labels(&client, &node_name, &labels, service_name)
+                                    .await
+                                    .unwrap();
                             }
                         }
                     }
@@ -1450,13 +641,17 @@ mod tests {
         {
             let node_name = node.metadata.name.unwrap();
             let truth_labels = truth_node_labels.get(&node_name).unwrap();
+            let node_labels = node.metadata.labels.clone();
+            /*
             let node_labels = match node.metadata.labels.clone() {
-                Some(mut node_labels) => {
-                    node_labels.remove(LABEL_VERSION);
+                Some(node_labels) => {
+                    // TODO
+                    //node_labels.remove(LABEL_VERSION);
                     Some(node_labels)
                 }
                 None => None,
             };
+            */
             if let Some(node_labels) = node_labels {
                 assert_eq!(node_labels, truth_labels.1);
             } else {
@@ -1503,9 +698,10 @@ mod tests {
             if config_map_name != "kube-root-ca.crt" && config_map_name != "minikube" {
                 debug!("ConfigMap name: {}", config_map_name);
                 let truth_labels = truth_node_labels.get(&config_map_name).unwrap();
-                if let Some(mut config_map_labels) = config_map.data.clone() {
-                    config_map_labels.remove(RESOURCE_VERSION);
-                    config_map_labels.remove(LABEL_VERSION);
+                if let Some(config_map_labels) = config_map.data.clone() {
+                    // TODO
+                    //config_map_labels.remove(RESOURCE_VERSION);
+                    //config_map_labels.remove(LABEL_VERSION);
                     assert_eq!(
                         config_map_labels, truth_labels.1,
                         "ConfigMap {} has labels {:?} but truth is expecting {:?}",

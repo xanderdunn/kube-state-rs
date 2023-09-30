@@ -130,8 +130,7 @@ pub async fn replace_node_labels(
 
 /// The special token reserved to encode `/` in label keys so that they can be stored as ConfigMap
 /// keys.
-// TODO: Prefer to make this private.
-pub const SLASH_TOKEN: &str = "---SLASH---";
+const SLASH_TOKEN: &str = "---SLASH---";
 
 /// As a workaround for Kubernetes ConfigMap key restrictions, we replace all forward slashes in
 /// keys with SLASH_TOKEN.
