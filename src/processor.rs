@@ -346,14 +346,26 @@ impl TransactionProcessor {
             "Creating metadata stored for node {}: {:?}...",
             node_name, config_map
         );
-        self.node_metadata
+        match self
+            .node_metadata
             .create(&Default::default(), &config_map)
-            .await?;
-        debug!(
-            "Successfully created metadata stored for node {}",
-            node_name
-        );
-        Ok(Some(transaction.clone()))
+            .await
+        {
+            Ok(_) => {
+                debug!(
+                    "Successfully created metadata stored for node {}",
+                    node_name
+                );
+                Ok(Some(transaction.clone()))
+            }
+            Err(error) => {
+                info!(
+                    "Failed to create metadata stored for node {}: {}",
+                    node_name, error
+                );
+                Ok(None)
+            }
+        }
     }
 
     /// This returns the transaction to be deleted if any one of these is true:
