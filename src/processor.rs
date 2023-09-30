@@ -17,7 +17,7 @@ use crate::utils::{
 
 enum TransactionProcessorState {
     FetchTransactions,
-    SelectNode(Vec<ConfigMap>),
+    SelectTransaction(Vec<ConfigMap>),
     LeaderElection(ConfigMap),
     Process(ConfigMap, LeaseLock, LeaseLockResult),
     Cleanup(ConfigMap),
@@ -44,10 +44,17 @@ impl TransactionProcessor {
     /// Get all ConfigMaps in the `TRANSACTION_NAMESPACE`
     async fn fetch_transactions(&self) -> Result<Option<Vec<ConfigMap>>, anyhow::Error> {
         let transaction_list = self.transactions.list(&Default::default()).await?;
-        if transaction_list.items.is_empty() {
+        // Exclude special system ConfigMap
+        let filtered_list: Vec<ConfigMap> = transaction_list
+            .items
+            .into_iter()
+            .filter(|cm| cm.metadata.name.as_deref() != Some("kube-root-ca.crt"))
+            .collect();
+
+        if filtered_list.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(transaction_list.items))
+            Ok(Some(filtered_list))
         }
     }
 
@@ -410,14 +417,16 @@ impl TransactionProcessor {
                     }
                     debug!("State: FetchTransactions");
                     if let Some(config_maps) = self.fetch_transactions().await? {
-                        state = TransactionProcessorState::SelectNode(config_maps);
+                        debug!("There are {} transactions to process...", config_maps.len());
+                        debug!("Transactions to process: {:?}", config_maps);
+                        state = TransactionProcessorState::SelectTransaction(config_maps);
                     } else {
                         debug!("There are no transactions to process...");
                         state = TransactionProcessorState::FetchTransactions;
                     }
                 }
-                TransactionProcessorState::SelectNode(transactions) => {
-                    debug!("State: SelectNode");
+                TransactionProcessorState::SelectTransaction(transactions) => {
+                    debug!("State: SelectTransaction");
                     if let Some(transaction) = self.select_transaction(&transactions).await? {
                         state = TransactionProcessorState::LeaderElection(transaction);
                     } else {
@@ -435,7 +444,7 @@ impl TransactionProcessor {
                 }
                 TransactionProcessorState::Process(transaction, lease, _lease_lock_result) => {
                     // Keep the lease_lock alive until we're done processing the transaction
-                    debug!("State: SortAndProcess");
+                    debug!("State: Process");
                     if let Some(transaction_to_delete) =
                         self.process_transaction(&transaction, &lease).await?
                     {
