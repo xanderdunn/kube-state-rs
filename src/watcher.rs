@@ -11,10 +11,13 @@ use kube::{
     api::{Api, PostParams, WatchEvent, WatchParams},
     Client,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 // Local
-use crate::utils::{code_key_slashes, LABEL_STORE_VERSION_KEY, TRANSACTION_NAMESPACE};
+use crate::utils::{
+    code_key_slashes, hash_node_name, LABEL_STORE_VERSION_KEY, TRANSACTION_NAMESPACE,
+    TRANSACTION_TYPE_KEY,
+};
 
 /// A service that watches for node added and node deleted events. When it encounters one, it
 /// creates a versioned transaction as a ConfigMap in the namespace `TRANSACTION_NAMESPACE`.
@@ -35,19 +38,27 @@ impl Watcher {
 
     /// Creates a ConfigMap transaction with the name `<NODE_NAME>.<NODE_RESOURCE_VERSION>.added`, in the namespace `TRANSACTION_NAMESPACE`.
     async fn node_added(node: &Node, config_map_api: &Api<ConfigMap>) -> Result<(), anyhow::Error> {
-        debug!("Node added: {:?}", node.metadata.name.clone().unwrap());
-        let name = format!(
-            "{}.{}.added",
-            node.metadata.name.clone().unwrap(),
+        let node_name_hash = hash_node_name(&node.metadata.name.clone().unwrap());
+        let transaction_name = format!(
+            "{}.{}",
+            node_name_hash,
             node.metadata.resource_version.clone().unwrap()
         );
+        debug!(
+            "Node added: {:?}, creating transaction {}...",
+            node.metadata.name.clone().unwrap(),
+            transaction_name
+        );
+        let mut data: BTreeMap<String, String> = BTreeMap::new();
+        data.insert(TRANSACTION_TYPE_KEY.to_string(), "added".to_string());
+        data.insert("node_name".to_string(), node.metadata.name.clone().unwrap());
         let config_map = ConfigMap {
             metadata: ObjectMeta {
-                name: Some(name.clone()),
+                name: Some(transaction_name.clone()),
                 namespace: Some(TRANSACTION_NAMESPACE.to_string()),
                 ..Default::default()
             },
-            data: None, // We don't store any data, this is just a transaction marker
+            data: Some(data),
             ..Default::default()
         };
 
@@ -58,12 +69,12 @@ impl Watcher {
             match error {
                 // 409 Conflict
                 kube::Error::Api(kube::error::ErrorResponse { code, .. }) if code == 409 => {
-                    debug!("ConfigMap already exists: {}", name);
+                    debug!("ConfigMap already exists: {}", transaction_name);
                 }
                 _ => return Err(anyhow::Error::new(error)),
             }
         } else {
-            debug!("Created transaction ConfigMap: {}", name);
+            debug!("Created transaction ConfigMap: {}", transaction_name);
         }
         Ok(())
     }
@@ -73,21 +84,28 @@ impl Watcher {
         node: &Node,
         config_map_api: &Api<ConfigMap>,
     ) -> Result<(), anyhow::Error> {
-        debug!("Node deleted: {:?}", node.metadata.name.clone().unwrap());
-        let name = format!(
-            "{}.{}.deleted",
-            node.metadata.name.clone().unwrap(),
+        let node_name_hash = hash_node_name(&node.metadata.name.clone().unwrap());
+        let transaction_name = format!(
+            "{}.{}",
+            node_name_hash,
             node.metadata.resource_version.clone().unwrap()
+        );
+        debug!(
+            "Node deleted: {:?}, creating transaction {}...",
+            node.metadata.name.clone().unwrap(),
+            transaction_name
         );
         let mut labels = node.metadata.labels.clone().unwrap_or(BTreeMap::new());
         labels.insert(
             LABEL_STORE_VERSION_KEY.to_string(),
             node.metadata.resource_version.clone().unwrap(),
         );
+        labels.insert(TRANSACTION_TYPE_KEY.to_string(), "deleted".to_string());
+        labels.insert("node_name".to_string(), node.metadata.name.clone().unwrap());
         code_key_slashes(&mut labels, true);
         let config_map = ConfigMap {
             metadata: ObjectMeta {
-                name: Some(name.clone()),
+                name: Some(transaction_name.clone()),
                 namespace: Some(TRANSACTION_NAMESPACE.to_string()),
                 ..Default::default()
             },
@@ -101,12 +119,12 @@ impl Watcher {
         {
             match error {
                 kube::Error::Api(kube::error::ErrorResponse { code, .. }) if code == 409 => {
-                    debug!("ConfigMap already exists: {}", name);
+                    debug!("ConfigMap already exists: {}", transaction_name);
                 }
                 _ => return Err(anyhow::Error::new(error)),
             }
         } else {
-            debug!("Created transaction ConfigMap: {}", name);
+            debug!("Created transaction ConfigMap: {}", transaction_name);
         }
         Ok(())
     }
@@ -144,6 +162,9 @@ impl Watcher {
                 _ => {}
             }
         }
+
+        // TODO: Implement reconnect with exponential backoff logic
+        warn!("Watch connection broken!");
 
         Ok(())
     }

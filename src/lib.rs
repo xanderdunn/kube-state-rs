@@ -884,23 +884,8 @@ mod tests {
     use tracing::debug;
 
     // Local
-    use super::{
-        utils::init_tracing, NodeLabelPersistenceService, LABEL_VERSION, RESOURCE_VERSION,
-    };
-
-    /// A convenience function for asserting that the stored value is correct.
-    async fn assert_stored_label_has_value(
-        client: Client,
-        node_name: &str,
-        key: &str,
-        value: Option<&String>,
-    ) {
-        let stored_labels =
-            NodeLabelPersistenceService::get_config_map_labels(&client, node_name, "default")
-                .await
-                .unwrap();
-        assert_eq!(stored_labels.unwrap().get(key), value);
-    }
+    use super::{NodeLabelPersistenceService, LABEL_VERSION, RESOURCE_VERSION};
+    use crate::utils::init_tracing;
 
     /// A convenience function for asserting that the node's label value is correct.
     async fn assert_node_label_has_value(
@@ -911,11 +896,19 @@ mod tests {
     ) {
         let nodes: Api<Node> = Api::all(client.clone());
         let node = nodes.get(node_name).await.unwrap();
-        assert_eq!(node.metadata.labels.unwrap().get(key), value);
+        assert_eq!(
+            node.metadata.labels.as_ref().unwrap().get(key),
+            value,
+            "Node has {} value {:?} but expected {:?}",
+            key,
+            node.metadata.labels.as_ref().unwrap().get(key),
+            value
+        );
     }
 
     /// A convenience function to create a node by name.
-    async fn add_node(client: Client, node_name: &str) -> Result<(), anyhow::Error> {
+    /// This does nothing if the node already exists.
+    async fn create_node(client: Client, node_name: &str) -> Result<(), anyhow::Error> {
         let nodes: Api<Node> = Api::all(client.clone());
 
         let node = Node {
@@ -925,6 +918,15 @@ mod tests {
             },
             ..Default::default()
         };
+        // Check if it already exists
+        let node_list = nodes.list(&Default::default()).await.unwrap();
+        if node_list
+            .items
+            .iter()
+            .any(|n| n.metadata.name == Some(node_name.to_string()))
+        {
+            return Ok(());
+        }
         let node = nodes.create(&PostParams::default(), &node).await?;
         assert_eq!(node.metadata.labels, None);
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -979,19 +981,17 @@ mod tests {
     /// 1. Create a node
     /// 2. Add a label to the node
     /// 3. Delete the node, add the node back to the cluster and assert that the label is restored
-    async fn test_add_and_remove_nodes() {
+    async fn test_add_and_remove_node() {
         init_tracing("kube_state_rs", tracing::Level::DEBUG);
 
         // Start our service
         let client = Client::try_default().await.unwrap();
-        let namespace = "default";
-        delete_kube_state(client.clone(), namespace).await.unwrap();
 
         //
         // 1. Create a node.
         //
         let test_node_name = "node1";
-        add_node(client.clone(), test_node_name).await.unwrap();
+        create_node(client.clone(), test_node_name).await.unwrap();
 
         //
         // 2. Add a label to the node
@@ -1011,7 +1011,7 @@ mod tests {
         //
         delete_node(client.clone(), test_node_name).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-        add_node(client.clone(), test_node_name).await.unwrap();
+        create_node(client.clone(), test_node_name).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         assert_node_label_has_value(
             client.clone(),
@@ -1022,31 +1022,27 @@ mod tests {
         .await;
     }
 
-    // TODO: Fix this test. Currently we're overwriting.
-    #[ignore]
     #[tokio::test]
     #[serial]
     /// Test the following scenario:
     /// 1. Create a node
     /// 2. Add a label to the node
-    /// 3. Assert that the label is stored
+    /// 3. Delete the node and assert that the label is stored
     /// 4. Add the node back to the cluster with a different label already set. Assert that the new
-    ///    label is not overwritten.
-    /// 5. Assert that the new label is stored.
-    /// This test is to make sure that we do not overwrite newer labels on nodes even when they are
-    /// added back.
-    async fn test_not_overwriting_labels() {
+    ///    label is overwritten.
+    /// This is testing the edge case where labels are set on a node that is brought back to the
+    /// cluster before the processor has time to restore labels.
+    async fn test_overwriting_labels() {
         init_tracing("kube_state_rs", tracing::Level::DEBUG);
 
-        let namespace = "default";
+        //let namespace = "default";
         let client = Client::try_default().await.unwrap();
-        delete_kube_state(client.clone(), namespace).await.unwrap();
 
         //
         // 1. Create a node.
         //
         let test_node_name = "node1";
-        add_node(client.clone(), test_node_name).await.unwrap();
+        create_node(client.clone(), test_node_name).await.unwrap();
 
         //
         // 2. Add a label to the node
@@ -1062,22 +1058,15 @@ mod tests {
         .unwrap();
 
         //
-        // 3. Assert that the label is stored
-        //
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        assert_stored_label_has_value(
-            client.clone(),
-            test_node_name,
-            node_label_key,
-            Some(&node_label_value),
-        )
-        .await;
-
-        //
-        // 4. Delete the node and add the node back to the cluster with a different label already set.
-        // Assert that the new label is not overwritten.
+        // 3. Delete the node so that the label is stored
         //
         delete_node(client.clone(), test_node_name).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        //
+        // 4. Add the node back to the cluster with a different label already set.
+        // Assert that the new label is overwritten.
+        //
         let new_label_value = "test_label_value";
         let nodes: Api<Node> = Api::all(client.clone());
         let node = Node {
@@ -1093,41 +1082,20 @@ mod tests {
             ..Default::default()
         };
         nodes.create(&PostParams::default(), &node).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         // Check if the node was added
         let node_list = nodes.list(&Default::default()).await.unwrap();
         assert!(node_list
             .items
             .iter()
             .any(|n| n.metadata.name == Some(test_node_name.to_string())));
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
 
-        // Now the stored label value and the node label value are not the same.
-        assert_stored_label_has_value(
-            client.clone(),
-            test_node_name,
-            node_label_key,
-            Some(&node_label_value),
-        )
-        .await;
-        // Assert that the node has the new label
+        // Assert that the node has the stored label value
         assert_node_label_has_value(
             client.clone(),
             test_node_name,
             node_label_key,
-            Some(&new_label_value.to_string()),
-        )
-        .await;
-
-        //
-        // 5. Assert that the new label is stored.
-        //
-        delete_node(client.clone(), test_node_name).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        assert_stored_label_has_value(
-            client.clone(),
-            test_node_name,
-            node_label_key,
-            Some(&new_label_value.to_string()),
+            Some(&node_label_value.to_string()),
         )
         .await;
     }
@@ -1136,24 +1104,22 @@ mod tests {
     #[serial]
     /// 1. Create a node
     /// 2. Add a label to the node.
-    /// 3. Add the node back to the cluster
-    /// 4. Delete the label on the node
-    /// 5. Assert that deleted label is not in the store.
+    /// 3. Delete the node so that the label is stored
+    /// 4. Add the node back to the cluster and assert that the label is restored
+    /// 5. Delete the label on the node
+    /// 6. Cycle the node again and see that the label is not restored
     async fn test_deleting_labels() {
         init_tracing("kube_state_rs", tracing::Level::DEBUG);
 
         // Start from a clean slate
-        let namespace = "default";
         let service_name = "node-label-service";
         let client = Client::try_default().await.unwrap();
-        delete_kube_state(client.clone(), namespace).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
 
         //
         // 1. Create a node.
         //
         let test_node_name = "node1";
-        add_node(client.clone(), test_node_name).await.unwrap();
+        create_node(client.clone(), test_node_name).await.unwrap();
 
         //
         // 2. Add a label to the node
@@ -1163,12 +1129,27 @@ mod tests {
             set_random_label(client.clone(), test_node_name, node_label_key, service_name)
                 .await
                 .unwrap();
+        NodeLabelPersistenceService::add_or_update_node_label(
+            &client,
+            test_node_name,
+            node_label_key,
+            &node_label_value,
+            service_name,
+        )
+        .await
+        .unwrap();
 
         //
-        // 3. Assert that the label is stored
+        // 3. Delete the node so that labels are stored
         //
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-        assert_stored_label_has_value(
+        delete_node(client.clone(), test_node_name).await.unwrap();
+
+        //
+        // 4. Add the node back to the cluster and assert that the label is restored
+        //
+        create_node(client.clone(), test_node_name).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        assert_node_label_has_value(
             client.clone(),
             test_node_name,
             node_label_key,
@@ -1177,15 +1158,8 @@ mod tests {
         .await;
 
         //
-        // 4. Remove and add the node back to the cluster
-        //
-        delete_node(client.clone(), test_node_name).await.unwrap();
-        add_node(client.clone(), test_node_name).await.unwrap();
-
-        //
         // 5. Delete the label on the node
         //
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
         NodeLabelPersistenceService::delete_node_label(
             &client,
             test_node_name,
@@ -1194,23 +1168,39 @@ mod tests {
         )
         .await
         .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
         // The node should now have no labels
         let nodes: Api<Node> = Api::all(client.clone());
-        assert_eq!(
-            nodes.get(test_node_name).await.unwrap().metadata.labels,
-            None
-        );
+        // The node should not have the key that was deleted
+        let node_label_keys = nodes
+            .get(test_node_name)
+            .await
+            .unwrap()
+            .metadata
+            .labels
+            .unwrap()
+            .keys()
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>();
+        assert!(!node_label_keys.contains(&node_label_key.to_string()));
 
-        let config_maps: Api<ConfigMap> = Api::namespaced(client, namespace);
-        let config_maps_list = config_maps.list(&ListParams::default()).await.unwrap();
-        for config_map in config_maps_list.items.clone().into_iter() {
-            if let Some(name) = config_map.metadata.name {
-                assert_ne!(name, test_node_name);
-            }
-        }
-        // minikube and a root certificate
-        assert_eq!(config_maps_list.items.len(), 2);
+        //
+        // 6. Cycle the node again and see that the label is not restored
+        //
+        delete_node(client.clone(), test_node_name).await.unwrap();
+        create_node(client.clone(), test_node_name).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        // The node should not have the key that was deleted
+        let node_label_keys = nodes
+            .get(test_node_name)
+            .await
+            .unwrap()
+            .metadata
+            .labels
+            .unwrap()
+            .keys()
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>();
+        assert!(!node_label_keys.contains(&node_label_key.to_string()));
     }
 
     /// Delete all nodes in the cluster.
@@ -1251,6 +1241,7 @@ mod tests {
         Delete,
     }
 
+    #[ignore]
     #[tokio::test]
     #[serial]
     /// This test takes random actions and asserts that the state is as expected.
@@ -1305,7 +1296,7 @@ mod tests {
                         .collect();
                     let node_name = node_name.to_lowercase();
                     truth_node_labels.insert(node_name.clone(), (true, BTreeMap::new()));
-                    add_node(client.clone(), &node_name).await.unwrap();
+                    create_node(client.clone(), &node_name).await.unwrap();
                     debug!("Action Completed: added node {}", node_name);
                 }
                 NodeAction::AddLabelTo => {

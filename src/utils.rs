@@ -13,6 +13,7 @@ use kube::{
     api::{Api, PostParams},
     Client,
 };
+use sha2::{Digest, Sha256};
 use signal_hook::consts::TERM_SIGNALS;
 use signal_hook::iterator::Signals;
 use tracing::{debug, error, info};
@@ -26,6 +27,8 @@ pub const NODE_METADATA_NAMESPACE: &str = "node-metadata";
 /// The key where the Transaction Processor stores the ResourceVersion of the node when it's saving
 /// its metadata.
 pub const LABEL_STORE_VERSION_KEY: &str = "last_store_resource_version";
+/// A key on every transaction ConfigMap with the value either `deleted` or `added`.
+pub const TRANSACTION_TYPE_KEY: &str = "transaction_type";
 
 static INIT: Once = Once::new();
 
@@ -73,6 +76,14 @@ pub async fn create_namespace(client: &Client, namespace: &str) -> Result<(), an
     }
 }
 
+/// 64 character hexadecimal SHA256 hash of a node name.
+pub fn hash_node_name(node_name: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(node_name.as_bytes());
+    let result = hasher.finalize();
+    hex::encode(result)
+}
+
 /// Idempotent replace data on a ConfigMap.
 /// This fails if the ConfigMap's ResourceVersion has changed.
 pub async fn replace_config_map_data(
@@ -104,6 +115,7 @@ pub async fn replace_node_labels(
 ) -> Result<(), anyhow::Error> {
     let mut new_node = node.clone();
     new_node.metadata.labels = Some(labels.clone());
+    debug!("replacing with labels {:?}", new_node.metadata.labels);
 
     nodes
         .replace(

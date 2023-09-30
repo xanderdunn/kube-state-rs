@@ -8,11 +8,12 @@ We have two services. One stores versioned transactions on node addition or dele
 
 ### Service: Watcher
 - Node Added Event
-    - Create a ConfigMap transaction with the name `<NODE_NAME>.<NODE_RESOURCE_VERSION>.added`, in the `TRANSACTION_NAMESPACE`.
+    - Create a ConfigMap transaction with the name `<NODE_NAME_HASH>.<NODE_RESOURCE_VERSION>`, with `data: { "type": "added" }` in the `TRANSACTION_NAMESPACE`.
 - Node Deleted Event
-    - Store all labels in a ConfigMap transaction with name `<NODE_NAME>.<NODE_RESOURCE_VERSION>.deleted`, in the `TRANSACTION_NAMESPACE`.
+    - Store all labels in a ConfigMap transaction with name `<NODE_NAME_HASH>.<NODE_RESOURCE_VERSION>` with `data: {"type": "deleted"}`, in the `TRANSACTION_NAMESPACE`.
 
 Replicas of the Watcher service provide redundant work to ensure high availability.
+Node names are SHA256 hashed to a fixed 64 hexadecimal character length to prevent exceeding the 253 character limit of a ConfigMap name.
 
 ### Service: Transaction Processor
 - Loop
@@ -33,11 +34,12 @@ Replicating the Transaction Processor service provides both horizontal scaling a
 ### Potential Issues:
 - There is a time period after adding a node where it is not safe to make edits to the labels on that node because they could be overwritten by the Transaction Processor until it has processed the `transaction.added` for that node, restoring all stored labels.
 - We are potentially abusing the intended usage of ConfigMap and Lease here. We could have 5,000 different ConfigMaps and Leases in worst case scenario. This is within the limits imposed by Kubernetes, but may produce a lot of network traffic for the Kubernetes API. See [#3](https://github.com/xanderdunn/kube-state-rs/issues/3) for moving to a proper database such as Redis.
+- Limitation: If the ResourceVersion of a particular node ever became larger than `10**188 - 1`, then the transaction ConfigMap naming scheme `<NODE_NAME_HASH>.<NODE_RESOURCE_VERSION>` would no longer work. This is 253 characters maximum for a ConfigMap name - 64 characters for a SHA256 hash - 1 character = 188 characters to encode the `NODE_RESOURCE_VERSION`.
 
 ### Edge Cases:
-- We have a node that exists long enough to accumulate labels. We rapidly delete it, add it back, and then delete it again, all before the labels could be restored. So we will have a non-empty transaction.deleted, then a transaction.added, and then an empty transaction.deleted. The first transaction will successfully store all labels. The second transaction will fail to restore labels because by the time it's processed the node has been deleted again. The third transaction will be thrown out because it has no `labels_restored`, thus preventing us from losing all of our stored labels.
-- A label is changed immediately before the node is deleted. This will be successfully preserved in the `transaction.deleted` because 
-- A label is changed immediately after a node is created, before the label restoration occurs. Any label changes prior to the label restoration will be overwritten when the Transaction Processor processes the `transaction.added` for that node.
+- We have a node that exists long enough to accumulate labels. We rapidly delete it, add it back, and then delete it again, all before the labels could be restored. So we will have a non-empty transaction.deleted, then a transaction.added, and then an empty transaction.deleted. The first transaction will successfully store all labels. The second transaction will fail to restore labels because by the time it's processed the node has been deleted again. The third transaction will be thrown out because it has a `label_version` of 0, whereas the stored has a higher label version, so we do nothing, thus preventing us from losing all of our stored labels.
+- A label is changed immediately before the node is deleted. This will be successfully preserved in the `transaction.deleted` because the `WatchEvent::Deleted` will contain the node's state at the time of deletion.
+- A label is changed immediately after a node is created, before the label restoration occurs. Or, a node is created with a non-empty label set. Any label changes prior to the label restoration will be overwritten when the Transaction Processor processes the `transaction.added` for that node.
 
 ## Setup
 - Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`

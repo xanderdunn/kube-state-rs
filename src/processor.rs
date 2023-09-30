@@ -12,7 +12,7 @@ use tracing::{debug, warn};
 // Local
 use crate::utils::{
     code_key_slashes, replace_config_map_data, replace_node_labels, LABEL_STORE_VERSION_KEY,
-    NODE_METADATA_NAMESPACE, TRANSACTION_NAMESPACE,
+    NODE_METADATA_NAMESPACE, TRANSACTION_NAMESPACE, TRANSACTION_TYPE_KEY,
 };
 
 enum TransactionProcessorState {
@@ -63,17 +63,18 @@ impl TransactionProcessor {
         &self,
         transactions: &[ConfigMap],
     ) -> Result<Option<ConfigMap>, anyhow::Error> {
-        // Every ConfigMap in `transactions` has a name in the format `<NODE_NAME>.<NODE_RESOURCE_VERSION>.*`
-        // Get all unique `<NODE_NAME>`s from the list of transactions
-        // Extract unique node names
+        // Every ConfigMap in `transactions` has a node_name in its data.
+        // Get all unique node names from the list of transactions.
+        // Extract unique node names.
         let mut unique_node_names: Vec<String> = transactions
             .iter()
             .filter_map(|config_map| {
                 config_map
-                    .metadata
-                    .name
+                    .data
                     .as_ref()
-                    .and_then(|name| name.split('.').next())
+                    .unwrap()
+                    .get("node_name")
+                    .as_ref()
                     .map(|s| s.to_string())
             })
             .collect();
@@ -82,15 +83,16 @@ impl TransactionProcessor {
 
         // Randomly select a node name
         if let Some(selected_node_name) = unique_node_names.choose(&mut rand::thread_rng()) {
-            // Find all ConfigMaps that start with the chosen node name
+            // Find all ConfigMaps for the chosen node name
             let node_config_maps: Vec<_> = transactions
                 .iter()
                 .filter(|config_map| {
                     config_map
-                        .metadata
-                        .name
+                        .data
                         .as_ref()
-                        .map(|name| name.starts_with(selected_node_name))
+                        .unwrap()
+                        .get("node_name")
+                        .map(|name| name == selected_node_name)
                         .unwrap_or(false)
                 })
                 .collect();
@@ -115,8 +117,7 @@ impl TransactionProcessor {
         transaction: &ConfigMap,
     ) -> Result<Option<(LeaseLock, LeaseLockResult)>, anyhow::Error> {
         let hostname = std::env::var("HOSTNAME").unwrap();
-        let transaction_name = transaction.metadata.name.clone().unwrap();
-        let node_name = transaction_name.split('.').next().unwrap();
+        let node_name = transaction.data.clone().unwrap()["node_name"].clone();
         // One should try to renew/acquire the lease before `lease_ttl` runs out.
         // E.g. if `lease_ttl` is set to 15 seconds, one should renew it every 5 seconds.
         let leadership = LeaseLock::new(
@@ -160,20 +161,25 @@ impl TransactionProcessor {
         transaction: &ConfigMap,
         lease: &LeaseLock,
     ) -> Result<Option<ConfigMap>, anyhow::Error> {
-        let transaction_name = transaction.metadata.name.clone().unwrap();
-        let node_name = transaction_name.split('.').next().unwrap();
-        match self.node_metadata.get(node_name).await {
+        let node_name = transaction.data.clone().unwrap()["node_name"].clone();
+        match self.node_metadata.get(&node_name).await {
             Ok(node_config_map) => {
-                match self.all_nodes.get(node_name).await {
+                match self.all_nodes.get(&node_name).await {
                     Ok(node) => {
                         // Read all labels from the ConfigMap named `<NODE_NAME>` in the `NODE_METADATA_NAMESPACE`. Replace all labels on the node.
                         let mut stored_labels = node_config_map.data.unwrap();
+                        stored_labels.remove(TRANSACTION_TYPE_KEY);
+                        stored_labels.remove("node_name");
                         code_key_slashes(&mut stored_labels, false);
                         if let Some(_lease_result) = Self::still_leader(lease).await? {
                         } else {
                             // I am no longer the leader, do nothing.
                             return Ok(None);
                         }
+                        debug!(
+                            "Restoring metadata stored for node {}: {:?}",
+                            node_name, stored_labels
+                        );
                         replace_node_labels(&self.all_nodes, &node, &stored_labels).await?;
                         Ok(Some(transaction.clone()))
                     }
@@ -220,8 +226,7 @@ impl TransactionProcessor {
         stored_metadata: &ConfigMap,
         lease: &LeaseLock,
     ) -> Result<Option<ConfigMap>, anyhow::Error> {
-        let transaction_name = transaction.metadata.name.clone().unwrap();
-        let node_name = transaction_name.split('.').next().unwrap();
+        let node_name = transaction.data.clone().unwrap()["node_name"].clone();
         if let Some(node_labels) = transaction.data.clone() {
             // TODO: This resource version check is not sufficient. It will always be there because
             // it's inserted by the watcher. We need to do a label_version check.
@@ -233,7 +238,10 @@ impl TransactionProcessor {
                     // I am no longer the leader, do nothing.
                     return Ok(None);
                 }
-                debug!("Updating metadata stored for node {}...", node_name);
+                debug!(
+                    "Updating metadata stored for node {}: {:?}...",
+                    node_name, updated_labels
+                );
                 replace_config_map_data(&self.node_metadata, stored_metadata, &updated_labels)
                     .await?;
                 debug!(
@@ -260,8 +268,7 @@ impl TransactionProcessor {
         transaction: &ConfigMap,
         lease: &LeaseLock,
     ) -> Result<Option<ConfigMap>, anyhow::Error> {
-        let transaction_name = transaction.metadata.name.clone().unwrap();
-        let node_name = transaction_name.split('.').next().unwrap();
+        let node_name = transaction.data.clone().unwrap()["node_name"].clone();
         let labels = transaction.data.clone().unwrap();
         let config_map = ConfigMap {
             metadata: ObjectMeta {
@@ -277,7 +284,10 @@ impl TransactionProcessor {
             // I am no longer the leader, do nothing.
             return Ok(None);
         }
-        debug!("Creating metadata stored for node {}...", node_name);
+        debug!(
+            "Creating metadata stored for node {}: {:?}...",
+            node_name, config_map
+        );
         self.node_metadata
             .create(&Default::default(), &config_map)
             .await?;
@@ -297,9 +307,8 @@ impl TransactionProcessor {
         transaction: &ConfigMap,
         lease: &LeaseLock,
     ) -> Result<Option<ConfigMap>, anyhow::Error> {
-        let transaction_name = transaction.metadata.name.clone().unwrap();
-        let node_name = transaction_name.split('.').next().unwrap();
-        match self.node_metadata.get(node_name).await {
+        let node_name = transaction.data.clone().unwrap()["node_name"].clone();
+        match self.node_metadata.get(&node_name).await {
             Ok(stored_metadata) => {
                 // If there already exists a ConfigMap named `<NODE_NAME>` in the `NODE_METADATA_NAMESPACE`, replace it if `LABEL_STORE_VERSION_KEY` is present in the node's labels. If it's not present, do nothing. This is to prevent erasing our stored labels if the node was rapidly added and then deleted before we could restore the saved labels.
                 self.handle_node_label_update(transaction, &stored_metadata, lease)
@@ -328,15 +337,20 @@ impl TransactionProcessor {
         transaction: &ConfigMap,
         lease: &LeaseLock,
     ) -> Result<Option<ConfigMap>, anyhow::Error> {
-        let transaction_name = transaction.metadata.name.clone().unwrap();
-        if transaction_name.ends_with("added") {
+        let transaction_type = transaction
+            .data
+            .as_ref()
+            .unwrap()
+            .get(TRANSACTION_TYPE_KEY)
+            .unwrap();
+        if transaction_type == "added" {
             self.process_transaction_added(transaction, lease).await
-        } else if transaction_name.ends_with("deleted") {
+        } else if transaction_type == "deleted" {
             self.process_transaction_deleted(transaction, lease).await
         } else {
             warn!(
-                "Got unexpected transaction name that ends with neither `deleted` nor `added`: {}",
-                transaction_name
+                "Got unexpected transaction type that is neither `deleted` nor `added`: {:?}",
+                transaction
             );
             // We can do nothing and delete the transaction
             Ok(Some(transaction.clone()))
