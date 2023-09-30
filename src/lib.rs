@@ -222,7 +222,7 @@ mod tests {
         //
         delete_node(client.clone(), test_node_name).await.unwrap();
         create_node(client.clone(), test_node_name).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
         assert_node_label_has_value(
             client.clone(),
             test_node_name,
@@ -369,6 +369,7 @@ mod tests {
         //
         create_node(client.clone(), test_node_name).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        debug!("assertion 1");
         assert_node_label_has_value(
             client.clone(),
             test_node_name,
@@ -396,6 +397,7 @@ mod tests {
             .keys()
             .map(|s| s.to_string())
             .collect::<Vec<String>>();
+        debug!("assertion 2");
         assert!(!node_label_keys.contains(&node_label_key.to_string()));
 
         //
@@ -403,7 +405,7 @@ mod tests {
         //
         delete_node(client.clone(), test_node_name).await.unwrap();
         create_node(client.clone(), test_node_name).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
         // The node should not have the key that was deleted
         let node_label_keys = nodes
             .get(test_node_name)
@@ -415,6 +417,7 @@ mod tests {
             .keys()
             .map(|s| s.to_string())
             .collect::<Vec<String>>();
+        debug!("assertion 3");
         assert!(!node_label_keys.contains(&node_label_key.to_string()));
     }
 
