@@ -23,4 +23,4 @@ kubectl get pods -l app=kube-state-rs-processor
 # kubectl logs -f
 # Wait for the pod to be ready
 sleep 3
-# cargo test
+cargo test test_add_and_remove_nodes

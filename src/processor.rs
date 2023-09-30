@@ -213,29 +213,27 @@ impl TransactionProcessor {
     }
 
     /// Handle the case where we want to store node labels and the ConfigMap already exists, so it
-    /// needs to be updated.
+    /// needs to be replaced.
     async fn handle_node_label_update(
         &self,
         transaction: &ConfigMap,
-        node: &Node,
         stored_metadata: &ConfigMap,
         lease: &LeaseLock,
     ) -> Result<Option<ConfigMap>, anyhow::Error> {
-        let node_name = transaction.metadata.name.clone().unwrap();
-        if let Some(node_labels) = node.metadata.labels.clone() {
+        let transaction_name = transaction.metadata.name.clone().unwrap();
+        let node_name = transaction_name.split('.').next().unwrap();
+        if let Some(node_labels) = transaction.data.clone() {
+            // TODO: This resource version check is not sufficient. It will always be there because
+            // it's inserted by the watcher. We need to do a label_version check.
             if node_labels.get(LABEL_STORE_VERSION_KEY).cloned().is_some() {
-                debug!("Updating metadata stored for node {}...", node_name);
                 let mut updated_labels = node_labels.clone();
-                updated_labels.insert(
-                    LABEL_STORE_VERSION_KEY.to_string(),
-                    node.metadata.resource_version.clone().unwrap(),
-                );
                 code_key_slashes(&mut updated_labels, true);
                 if let Some(_lease_result) = Self::still_leader(lease).await? {
                 } else {
                     // I am no longer the leader, do nothing.
                     return Ok(None);
                 }
+                debug!("Updating metadata stored for node {}...", node_name);
                 replace_config_map_data(&self.node_metadata, stored_metadata, &updated_labels)
                     .await?;
                 debug!(
@@ -260,18 +258,14 @@ impl TransactionProcessor {
     async fn handle_node_label_creation(
         &self,
         transaction: &ConfigMap,
-        node: &Node,
         lease: &LeaseLock,
     ) -> Result<Option<ConfigMap>, anyhow::Error> {
-        let node_name = transaction.metadata.name.clone().unwrap();
-        let mut labels = node.metadata.labels.clone().unwrap_or_default();
-        labels.insert(
-            LABEL_STORE_VERSION_KEY.to_string(),
-            node.metadata.resource_version.clone().unwrap(),
-        );
+        let transaction_name = transaction.metadata.name.clone().unwrap();
+        let node_name = transaction_name.split('.').next().unwrap();
+        let labels = transaction.data.clone().unwrap();
         let config_map = ConfigMap {
             metadata: ObjectMeta {
-                name: Some(node_name.clone()),
+                name: Some(node_name.to_string()),
                 namespace: Some(NODE_METADATA_NAMESPACE.to_string()),
                 ..Default::default()
             },
@@ -283,9 +277,14 @@ impl TransactionProcessor {
             // I am no longer the leader, do nothing.
             return Ok(None);
         }
+        debug!("Creating metadata stored for node {}...", node_name);
         self.node_metadata
             .create(&Default::default(), &config_map)
             .await?;
+        debug!(
+            "Successfully created metadata stored for node {}",
+            node_name
+        );
         Ok(Some(transaction.clone()))
     }
 
@@ -303,27 +302,8 @@ impl TransactionProcessor {
         match self.node_metadata.get(node_name).await {
             Ok(stored_metadata) => {
                 // If there already exists a ConfigMap named `<NODE_NAME>` in the `NODE_METADATA_NAMESPACE`, replace it if `LABEL_STORE_VERSION_KEY` is present in the node's labels. If it's not present, do nothing. This is to prevent erasing our stored labels if the node was rapidly added and then deleted before we could restore the saved labels.
-                match self.all_nodes.get(node_name).await {
-                    Ok(node) => {
-                        self.handle_node_label_update(transaction, &node, &stored_metadata, lease)
-                            .await
-                    }
-                    Err(error) => {
-                        match error {
-                            // If the node no longer exists, delete the transaction, otherwise surface the error.
-                            kube::Error::Api(kube::error::ErrorResponse { code, .. })
-                                if code == 404 =>
-                            {
-                                debug!(
-                                    "Node {} no longer exists, so deleting the transaction",
-                                    node_name
-                                );
-                                Ok(Some(transaction.clone()))
-                            }
-                            _ => Err(anyhow::Error::new(error)),
-                        }
-                    }
-                }
+                self.handle_node_label_update(transaction, &stored_metadata, lease)
+                    .await
             }
             Err(error) => {
                 match error {
@@ -335,25 +315,7 @@ impl TransactionProcessor {
                             node_name
                         );
                         // Create a ConfigMap named node_name and put all of the labels from the node into it.
-                        match self.all_nodes.get(node_name).await {
-                            Ok(node) => {
-                                self.handle_node_label_creation(transaction, &node, lease)
-                                    .await
-                            }
-                            Err(error) => match error {
-                                // If the node no longer exists, delete the transaction, otherwise surface the error.
-                                kube::Error::Api(kube::error::ErrorResponse { code, .. })
-                                    if code == 404 =>
-                                {
-                                    debug!(
-                                        "Node {} no longer exists, so deleting the transaction",
-                                        node_name
-                                    );
-                                    Ok(Some(transaction.clone()))
-                                }
-                                _ => Err(anyhow::Error::new(error)),
-                            },
-                        }
+                        self.handle_node_label_creation(transaction, lease).await
                     }
                     _ => Err(anyhow::Error::new(error)),
                 }

@@ -14,7 +14,7 @@ use kube::{
 use tracing::{debug, error, info};
 
 // Local
-use crate::utils::{code_key_slashes, TRANSACTION_NAMESPACE};
+use crate::utils::{code_key_slashes, LABEL_STORE_VERSION_KEY, TRANSACTION_NAMESPACE};
 
 /// A service that watches for node added and node deleted events. When it encounters one, it
 /// creates a versioned transaction as a ConfigMap in the namespace `TRANSACTION_NAMESPACE`.
@@ -80,6 +80,10 @@ impl Watcher {
             node.metadata.resource_version.clone().unwrap()
         );
         let mut labels = node.metadata.labels.clone().unwrap_or(BTreeMap::new());
+        labels.insert(
+            LABEL_STORE_VERSION_KEY.to_string(),
+            node.metadata.resource_version.clone().unwrap(),
+        );
         code_key_slashes(&mut labels, true);
         let config_map = ConfigMap {
             metadata: ObjectMeta {

@@ -10,7 +10,7 @@ use k8s_openapi::{
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };
 use kube::{
-    api::{Api, PartialObjectMetaExt, Patch, PatchParams, PostParams},
+    api::{Api, PostParams},
     Client,
 };
 use signal_hook::consts::TERM_SIGNALS;
@@ -73,57 +73,46 @@ pub async fn create_namespace(client: &Client, namespace: &str) -> Result<(), an
     }
 }
 
-/// Replace data on a ConfigMap.
+/// Idempotent replace data on a ConfigMap.
 /// This fails if the ConfigMap's ResourceVersion has changed.
 pub async fn replace_config_map_data(
     config_maps: &Api<ConfigMap>,
     config_map: &ConfigMap,
     data: &BTreeMap<String, String>,
 ) -> Result<(), anyhow::Error> {
-    let metadata = ObjectMeta {
-        resource_version: config_map.metadata.resource_version.clone(),
-        ..Default::default()
-    };
-
-    let config_map_partial = ConfigMap {
-        metadata,
-        data: Some(data.clone()),
-        ..Default::default()
-    };
+    let mut new_config_map = config_map.clone();
+    new_config_map.data = Some(data.clone());
 
     config_maps
-        .patch(
+        .replace(
             config_map.metadata.name.as_ref().unwrap(),
-            &PatchParams::default(),
-            &Patch::Merge(&config_map_partial),
+            &PostParams::default(),
+            &new_config_map,
         )
         .await?;
+
     Ok(())
 }
 
-/// Replace labels on a node.
-/// This will overwrite labels whose keys are both already on the node and in the given `labels` map.
-/// However, it will not remove labels that are on the node but not in the given `labels` map.
+/// Idempotent replace labels on a node.
+/// The labels in the given map are exactly the labels the node will end up with.
 /// This fails if the node's ResourceVersion has changed.
 pub async fn replace_node_labels(
     nodes: &Api<Node>,
     node: &Node,
     labels: &BTreeMap<String, String>,
 ) -> Result<(), anyhow::Error> {
-    let metadata = ObjectMeta {
-        labels: Some(labels.clone()),
-        resource_version: node.metadata.resource_version.clone(),
-        ..Default::default()
-    }
-    .into_request_partial::<Node>();
+    let mut new_node = node.clone();
+    new_node.metadata.labels = Some(labels.clone());
 
     nodes
-        .patch_metadata(
-            &node.metadata.name.clone().unwrap(),
-            &PatchParams::default(),
-            &Patch::Merge(metadata),
+        .replace(
+            node.metadata.name.as_ref().unwrap(),
+            &PostParams::default(),
+            &new_node,
         )
         .await?;
+
     Ok(())
 }
 

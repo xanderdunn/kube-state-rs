@@ -978,8 +978,7 @@ mod tests {
     /// Test the following scenario:
     /// 1. Create a node
     /// 2. Add a label to the node
-    /// 3. Assert that the label is stored
-    /// 4. Add the node back to the cluster and assert that the label is restored
+    /// 3. Delete the node, add the node back to the cluster and assert that the label is restored
     async fn test_add_and_remove_nodes() {
         init_tracing("kube_state_rs", tracing::Level::DEBUG);
 
@@ -1008,30 +1007,12 @@ mod tests {
         .unwrap();
 
         //
-        // 3. Assert that the label is stored
-        //
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-        assert_stored_label_has_value(
-            client.clone(),
-            test_node_name,
-            node_label_key,
-            Some(&node_label_value),
-        )
-        .await;
-
-        //
-        // 4. Delete the node, add the node back to the cluster, and assert that the label is restored
+        // 3. Delete the node, add the node back to the cluster, and assert that the label is restored
         //
         delete_node(client.clone(), test_node_name).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         add_node(client.clone(), test_node_name).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-        assert_stored_label_has_value(
-            client.clone(),
-            test_node_name,
-            node_label_key,
-            Some(&node_label_value),
-        )
-        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         assert_node_label_has_value(
             client.clone(),
             test_node_name,

@@ -11,10 +11,10 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["nodes"]
-  verbs: ["watch", "list", "patch", "get"]
+  verbs: ["watch", "list", "get", "update"]
 - apiGroups: [""]
   resources: ["configmaps"]
-  verbs: ["create", "patch", "get", "list", "delete"]
+  verbs: ["create", "get", "list", "delete", "update"]
 - apiGroups: [""]
   resources: ["namespaces"]
   verbs: ["get", "create"]
