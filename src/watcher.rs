@@ -25,10 +25,10 @@ pub struct Watcher {
 }
 
 impl Watcher {
-    pub fn new(client: Client) -> Self {
+    pub fn new(client: &Client) -> Self {
         let config_map_api: Api<ConfigMap> = Api::namespaced(client.clone(), TRANSACTION_NAMESPACE);
         Self {
-            client,
+            client: client.clone(),
             config_map_api,
         }
     }
@@ -56,11 +56,14 @@ impl Watcher {
             .await
         {
             match error {
+                // 409 Conflict
                 kube::Error::Api(kube::error::ErrorResponse { code, .. }) if code == 409 => {
                     debug!("ConfigMap already exists: {}", name);
                 }
                 _ => return Err(anyhow::Error::new(error)),
             }
+        } else {
+            debug!("Created transaction ConfigMap: {}", name);
         }
         Ok(())
     }
@@ -98,6 +101,8 @@ impl Watcher {
                 }
                 _ => return Err(anyhow::Error::new(error)),
             }
+        } else {
+            debug!("Created transaction ConfigMap: {}", name);
         }
         Ok(())
     }

@@ -5,9 +5,12 @@ use std::sync::Once;
 use std::thread;
 
 // Third Party
-use k8s_openapi::{api::core::v1::Namespace, apimachinery::pkg::apis::meta::v1::ObjectMeta};
+use k8s_openapi::{
+    api::core::v1::{ConfigMap, Namespace, Node},
+    apimachinery::pkg::apis::meta::v1::ObjectMeta,
+};
 use kube::{
-    api::{Api, PostParams},
+    api::{Api, PartialObjectMetaExt, Patch, PatchParams, PostParams},
     Client,
 };
 use signal_hook::consts::TERM_SIGNALS;
@@ -17,6 +20,12 @@ use tracing_subscriber::prelude::*;
 
 /// The namespace where we store transactions to be processed by the transaction processor.
 pub const TRANSACTION_NAMESPACE: &str = "node-metadata-transactions";
+/// The namespace where we store the latest version of a node's metadata.
+/// These ConfigMaps are updated on node deletion.
+pub const NODE_METADATA_NAMESPACE: &str = "node-metadata";
+/// The key where the Transaction Processor stores the ResourceVersion of the node when it's saving
+/// its metadata.
+pub const LABEL_STORE_VERSION_KEY: &str = "last_store_resource_version";
 
 static INIT: Once = Once::new();
 
@@ -41,21 +50,81 @@ pub async fn create_namespace(client: &Client, namespace: &str) -> Result<(), an
             debug!("Namespace {} already exists.", namespace);
             Ok(())
         }
-        Err(_) => {
-            debug!("Namespace {} does not exist, creating...", namespace);
-            let namespace = Namespace {
-                metadata: ObjectMeta {
-                    name: Some(namespace.to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            namespaces
-                .create(&PostParams::default(), &namespace)
-                .await?;
-            Ok(())
+        Err(error) => {
+            match error {
+                // 404 Not found
+                kube::Error::Api(kube::error::ErrorResponse { code, .. }) if code == 404 => {
+                    info!("Namespace {} does not exist, creating...", namespace);
+                    let namespace = Namespace {
+                        metadata: ObjectMeta {
+                            name: Some(namespace.to_string()),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    namespaces
+                        .create(&PostParams::default(), &namespace)
+                        .await?;
+                    Ok(())
+                }
+                _ => Err(anyhow::Error::new(error)),
+            }
         }
     }
+}
+
+/// Replace data on a ConfigMap.
+/// This fails if the ConfigMap's ResourceVersion has changed.
+pub async fn replace_config_map_data(
+    config_maps: &Api<ConfigMap>,
+    config_map: &ConfigMap,
+    data: &BTreeMap<String, String>,
+) -> Result<(), anyhow::Error> {
+    let metadata = ObjectMeta {
+        resource_version: config_map.metadata.resource_version.clone(),
+        ..Default::default()
+    };
+
+    let config_map_partial = ConfigMap {
+        metadata,
+        data: Some(data.clone()),
+        ..Default::default()
+    };
+
+    config_maps
+        .patch(
+            config_map.metadata.name.as_ref().unwrap(),
+            &PatchParams::default(),
+            &Patch::Merge(&config_map_partial),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Replace labels on a node.
+/// This will overwrite labels whose keys are both already on the node and in the given `labels` map.
+/// However, it will not remove labels that are on the node but not in the given `labels` map.
+/// This fails if the node's ResourceVersion has changed.
+pub async fn replace_node_labels(
+    nodes: &Api<Node>,
+    node: &Node,
+    labels: &BTreeMap<String, String>,
+) -> Result<(), anyhow::Error> {
+    let metadata = ObjectMeta {
+        labels: Some(labels.clone()),
+        resource_version: node.metadata.resource_version.clone(),
+        ..Default::default()
+    }
+    .into_request_partial::<Node>();
+
+    nodes
+        .patch_metadata(
+            &node.metadata.name.clone().unwrap(),
+            &PatchParams::default(),
+            &Patch::Merge(metadata),
+        )
+        .await?;
+    Ok(())
 }
 
 /// The special token reserved to encode `/` in label keys so that they can be stored as ConfigMap

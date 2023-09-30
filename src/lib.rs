@@ -16,6 +16,7 @@ use tokio::task;
 use tracing::{debug, info, warn};
 
 // Local
+pub mod processor;
 pub mod utils;
 pub mod watcher;
 use utils::{code_key_slashes, SLASH_TOKEN};

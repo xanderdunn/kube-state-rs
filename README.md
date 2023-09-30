@@ -12,13 +12,13 @@ We have two services. One stores versioned transactions on node addition or dele
 - Node Deleted Event
     - Store all labels in a ConfigMap transaction with name `<NODE_NAME>.<NODE_RESOURCE_VERSION>.deleted`, in the `TRANSACTION_NAMESPACE`.
 
-Replicas of the Watcher service provide redundant work to ensure liveness.
+Replicas of the Watcher service provide redundant work to ensure high availability.
 
 ### Service: Transaction Processor
 - Loop
     - 1: Get all ConfigMaps in the `TRANSACTION_NAMESPACE`
     - 2: Choose a random node to process from the list of transactions.
-    - Leader election using a lease lock with that node’s name
+    - Leader election using a lease lock on that node’s name
         - Lease successful
             - Sort the transactions for this node by ResourceVersion, process the one with the smallest ResourceVersion.
                 - If it's a transaction.deleted
@@ -26,7 +26,7 @@ Replicas of the Watcher service provide redundant work to ensure liveness.
                    - If there already exists a ConfigMap named `<NODE_NAME>` in the `NODE_METADATA_NAMESPACE`, replace it if `labels_restored` is present in the node's labels. If it's not present, do nothing. This is to prevent erasing our stored labels if the node was rapidly added and then deleted before we could restore the saved labels.
                 - If it's a transaction.added, read all labels from the ConfigMap named `<NODE_NAME>` in the `NODE_METADATA_NAMESPACE`. Replace all labels on the node. If the node no longer exists, simply delete the transaction. If there is no ConfigMap for this node, simply delete the transaction.
             - If successfully processed, delete this particular transaction ConfigMap. Go to 1.
-        - Lease failed. Go to 2.
+        - Lease failed. Go to 1.
 
 Replicating the Transaction Processor service provides both horizontal scaling and high availability. Each replica does non-overlapping work to process the transactions recorded by the Watcher.
 
@@ -51,35 +51,6 @@ Replicating the Transaction Processor service provides both horizontal scaling a
 
 ## Test
 - `cargo test`
-
-## Example Local Dev Usage
-Here is some example usage of the binary:
-- Run the binary: `cargo run`
-- Create a node:
-```
-echo '{
-  "apiVersion": "v1",
-  "kind": "Node",
-  "metadata": {
-    "name": "my-new-node"
-  },
-  "spec": {
-    "taints": [
-      {
-        "effect": "NoSchedule",
-        "key": "node.kubernetes.io/unschedulable",
-        "value": "true"
-      }
-    ]
-  }
-}' | kubectl create -f -
-```
-- You'll see the service print debug messages that a node has been added
-- Add a label to the node: `kubectl label nodes my-new-node my_key=my_test_value`
-- Delete the node: `kubectl delete node my-new-node`
-- Print the `ConfigMap` to see that the label was stored: `kubectl get configmap my-new-node -o yaml`
-- Add the node back to the cluster with the same command as above.
-- See that the labels have been restored on the node: `kubectl get nodes my-new-node --show-labels`
 
 ## Assumptions
 - It's important when we deploy this that we make multiple nodes across different regions available to the service, and that region is set in the key `kubernetes.io/hostname`.

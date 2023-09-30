@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-state-rs-processor-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-state-rs-processor-combined-role
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["watch", "list", "patch", "get"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create", "patch", "get", "list", "delete"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "create"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-state-rs-processor-combined-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-state-rs-processor-combined-role
+subjects:
+- kind: ServiceAccount
+  name: kube-state-rs-processor-sa
+  namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-rs-processor
+spec:
+  replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: kube-state-rs-processor
+  template:
+    metadata:
+      labels:
+        app: kube-state-rs-processor
+    spec:
+      serviceAccountName: kube-state-rs-processor-sa
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - kube-state-rs-processor
+              topologyKey: "topology.kubernetes.io/region"
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - kube-state-rs-processor
+              topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: kube-state-rs-processor
+          image: kube-state-rs-processor
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              cpu: "0.5"
+              memory: 500Mi
+            requests:
+              cpu: "0.2"
+              memory: 200Mi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kube-state-rs-processor-pdb
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: kube-state-rs-processor

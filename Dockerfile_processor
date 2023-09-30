@@ -1,0 +1,15 @@
+FROM rust:1-slim-bullseye
+
+RUN apt-get update
+RUN apt-get install -y pkg-config
+RUN apt-get install -y openssl libssl-dev
+
+COPY ./Cargo.toml /usr/local/kube-state-rs/Cargo.toml
+COPY ./src /usr/local/kube-state-rs/src
+
+RUN cd /usr/local/kube-state-rs/src/bin/processor && cargo build
+RUN cp /usr/local/kube-state-rs/target/debug/processor /usr/local/bin/processor
+
+RUN chmod +x /usr/local/bin/processor
+
+ENTRYPOINT ["/usr/local/bin/processor"]

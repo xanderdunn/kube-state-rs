@@ -13,8 +13,8 @@ name = "watcher"
 name = "processor"
 
 [dependencies]
-kube = { version = "0.86", features = ["runtime", "derive"] }
-k8s-openapi = { version = "0.20.0", features = ["latest"] }
+kube = { version = "0.85", features = ["runtime", "derive"] }
+k8s-openapi = { version = "0.19", features = ["latest"] }
 tokio = { version = "1.32", features = ["full", "rt"] }
 rand = "0.8"
 serde_json = "1.0"
@@ -24,3 +24,4 @@ tracing-subscriber = { version = "0.2", features = ["env-filter"] }
 serial_test = "2"
 anyhow = "1.0"
 signal-hook = "0.3"
+kube-leader-election = ">=0.25"

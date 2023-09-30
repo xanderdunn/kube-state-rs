@@ -13,7 +13,7 @@ async fn main() -> Result<(), anyhow::Error> {
     setup_exit_hooks();
     let client = Client::try_default().await.unwrap();
     create_namespace(&client, TRANSACTION_NAMESPACE).await?;
-    let node_watcher = Watcher::new(client.clone());
+    let node_watcher = Watcher::new(&client);
 
     // If the watch stream ends, we panic and Kubernetes will restart the pod with backoff
     node_watcher.watch_nodes().await?;
