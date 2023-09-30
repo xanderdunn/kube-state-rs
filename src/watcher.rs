@@ -17,8 +17,8 @@ use tracing::{debug, error, info, warn};
 
 // Local
 use crate::utils::{
-    code_key_slashes, hash_node_name, LABEL_STORE_VERSION_KEY, TRANSACTION_NAMESPACE,
-    TRANSACTION_TYPE_KEY,
+    code_key_slashes, hash_node_name, LABEL_STORE_VERSION_KEY, LABEL_VERSION_KEY,
+    TRANSACTION_NAMESPACE, TRANSACTION_TYPE_KEY,
 };
 
 const NUM_WATCH_RETRIES: u32 = 30;
@@ -100,12 +100,23 @@ impl Watcher {
             transaction_name
         );
         let mut labels = node.metadata.labels.clone().unwrap_or(BTreeMap::new());
+        let new_node_label_version: u32 = match labels.get(LABEL_VERSION_KEY) {
+            Some(version) => {
+                let version: u32 = version.parse().unwrap_or(0);
+                version + 1
+            }
+            None => 0,
+        };
         labels.insert(
             LABEL_STORE_VERSION_KEY.to_string(),
             node.metadata.resource_version.clone().unwrap(),
         );
         labels.insert(TRANSACTION_TYPE_KEY.to_string(), "deleted".to_string());
         labels.insert("node_name".to_string(), node.metadata.name.clone().unwrap());
+        labels.insert(
+            LABEL_VERSION_KEY.to_string(),
+            new_node_label_version.to_string(),
+        );
         code_key_slashes(&mut labels, true);
         let config_map = ConfigMap {
             metadata: ObjectMeta {

@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 
 // Local
 use crate::utils::{
-    code_key_slashes, replace_config_map_data, replace_node_labels, LABEL_STORE_VERSION_KEY,
+    code_key_slashes, replace_config_map_data, replace_node_labels, LABEL_VERSION_KEY,
     NODE_METADATA_NAMESPACE, TRANSACTION_NAMESPACE, TRANSACTION_TYPE_KEY,
 };
 
@@ -251,40 +251,58 @@ impl TransactionProcessor {
     ) -> Result<Option<ConfigMap>, anyhow::Error> {
         let node_name = transaction.data.clone().unwrap()["node_name"].clone();
         if let Some(node_labels) = transaction.data.clone() {
-            // TODO: This resource version check is not sufficient. It will always be there because
-            // it's inserted by the watcher. We need to do a label_version check.
-            if node_labels.get(LABEL_STORE_VERSION_KEY).cloned().is_some() {
-                let mut updated_labels = node_labels.clone();
-                code_key_slashes(&mut updated_labels, true);
-                if let Some(_lease_result) = Self::still_leader(lease).await {
-                } else {
-                    // I am no longer the leader, do nothing.
-                    return Ok(None);
-                }
-                debug!(
-                    "Updating metadata stored for node {}: {:?}...",
-                    node_name, updated_labels
-                );
-                match replace_config_map_data(&self.node_metadata, stored_metadata, &updated_labels)
+            if let Some(node_label_version) = node_labels.get(LABEL_VERSION_KEY).cloned() {
+                let stored_label_version = stored_metadata
+                    .data
+                    .as_ref()
+                    .unwrap()
+                    .get(LABEL_VERSION_KEY)
+                    .cloned()
+                    .unwrap();
+                if node_label_version > stored_label_version {
+                    // We throw away the transaction if it was not made based on the latest stored
+                    // labels. This is to prevent the edge case where a node is rapidly added and
+                    // deleted and an empty transaction.deleted causes all of our stored labels to
+                    // be erased.
+                    let mut updated_labels = node_labels.clone();
+                    code_key_slashes(&mut updated_labels, true);
+                    if let Some(_lease_result) = Self::still_leader(lease).await {
+                    } else {
+                        // I am no longer the leader, do nothing.
+                        return Ok(None);
+                    }
+                    debug!(
+                        "Updating metadata stored for node {}: {:?}...",
+                        node_name, updated_labels
+                    );
+                    match replace_config_map_data(
+                        &self.node_metadata,
+                        stored_metadata,
+                        &updated_labels,
+                    )
                     .await
-                {
-                    Ok(()) => {
-                        debug!(
-                            "Successfully updated metadata stored for node {}",
-                            node_name
-                        );
-                        Ok(Some(transaction.clone()))
+                    {
+                        Ok(()) => {
+                            debug!(
+                                "Successfully updated metadata stored for node {}",
+                                node_name
+                            );
+                            Ok(Some(transaction.clone()))
+                        }
+                        Err(error) => {
+                            info!(
+                                "Failed to update metadata stored for node {}: {}",
+                                node_name, error
+                            );
+                            Ok(None)
+                        }
                     }
-                    Err(error) => {
-                        info!(
-                            "Failed to update metadata stored for node {}: {}",
-                            node_name, error
-                        );
-                        Ok(None)
-                    }
+                } else {
+                    debug!("Node {} has a lower version than the stored version, so ignoring and deleting the transaction", node_name);
+                    Ok(Some(transaction.clone()))
                 }
             } else {
-                debug!("Node {} does not have the `{}` label, so ignoring and deleting the transaction", LABEL_STORE_VERSION_KEY, node_name);
+                debug!("Node {} does not have the `{}` label, so ignoring and deleting the transaction", LABEL_VERSION_KEY, node_name);
                 Ok(Some(transaction.clone()))
             }
         } else {

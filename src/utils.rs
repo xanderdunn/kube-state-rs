@@ -29,6 +29,9 @@ pub const NODE_METADATA_NAMESPACE: &str = "node-metadata";
 pub const LABEL_STORE_VERSION_KEY: &str = "last_store_resource_version";
 /// A key on every transaction ConfigMap with the value either `deleted` or `added`.
 pub const TRANSACTION_TYPE_KEY: &str = "transaction_type";
+/// Key used to identify the version of the labels. This starts at 0 and increments +1 every time
+/// we update the labels for a node.
+pub const LABEL_VERSION_KEY: &str = "label_version";
 
 static INIT: Once = Once::new();
 
