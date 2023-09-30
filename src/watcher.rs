@@ -2,7 +2,7 @@
 use std::collections::BTreeMap;
 
 // Third Party
-use futures::{StreamExt, TryStreamExt};
+use futures::{pin_mut, TryStreamExt};
 use k8s_openapi::{
     api::core::v1::{ConfigMap, Node},
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
@@ -11,6 +11,8 @@ use kube::{
     api::{Api, PostParams, WatchEvent, WatchParams},
     Client,
 };
+use rand::Rng;
+use tokio::time::{self, Duration};
 use tracing::{debug, error, info, warn};
 
 // Local
@@ -18,6 +20,8 @@ use crate::utils::{
     code_key_slashes, hash_node_name, LABEL_STORE_VERSION_KEY, TRANSACTION_NAMESPACE,
     TRANSACTION_TYPE_KEY,
 };
+
+const NUM_WATCH_RETRIES: u32 = 30;
 
 /// A service that watches for node added and node deleted events. When it encounters one, it
 /// creates a versioned transaction as a ConfigMap in the namespace `TRANSACTION_NAMESPACE`.
@@ -132,40 +136,73 @@ impl Watcher {
     /// Start watching all node events and save and restore labels as needed.
     /// This will save all metadata labels for a node when it is deleted.
     pub async fn watch_nodes(&self) -> Result<(), anyhow::Error> {
-        let nodes: Api<Node> = Api::all(self.client.clone());
-        let nodes_list = nodes.list(&Default::default()).await?;
-        let nodes_resource_version = nodes_list.metadata.resource_version.unwrap();
+        let mut delay_duration = Duration::from_secs(1);
+        let max_delay = Duration::from_secs(30);
+        let mut rng = rand::thread_rng();
+        let mut num_retries = 0;
 
-        info!("Starting node label watcher...");
-        // It's expected that this stream will periodically break and will have to be re-issued.
-        let mut stream = nodes
-            .watch(&WatchParams::default(), &nodes_resource_version)
-            .await?
-            .boxed();
-        while let Some(status) = stream.try_next().await? {
-            let config_map_api = self.config_map_api.clone();
-            match status {
-                WatchEvent::Added(node) => {
-                    tokio::spawn(async move {
-                        if let Err(e) = Self::node_added(&node, &config_map_api).await {
-                            error!("Error in node_added: {}", e);
+        loop {
+            let nodes: Api<Node> = Api::all(self.client.clone());
+            let nodes_resource_version = {
+                let nodes_list = nodes.list(&Default::default()).await?;
+                nodes_list.metadata.resource_version.unwrap()
+            };
+            info!("Starting node label watcher...");
+            let watch_result = nodes
+                .watch(&WatchParams::default(), &nodes_resource_version)
+                .await;
+
+            match watch_result {
+                Ok(stream) => {
+                    pin_mut!(stream);
+                    // Successfully connected, so reset duration and retry limit
+                    delay_duration = Duration::from_secs(1);
+                    num_retries = 0;
+                    while let Some(status) = stream.try_next().await? {
+                        let config_map_api = self.config_map_api.clone();
+                        match status {
+                            WatchEvent::Added(node) => {
+                                tokio::spawn(async move {
+                                    if let Err(e) = Self::node_added(&node, &config_map_api).await {
+                                        error!("Error in node_added: {}", e);
+                                    }
+                                });
+                            }
+                            WatchEvent::Deleted(node) => {
+                                tokio::spawn(async move {
+                                    if let Err(e) = Self::node_deleted(&node, &config_map_api).await
+                                    {
+                                        error!("Error in node_deleted: {}", e);
+                                    }
+                                });
+                            }
+                            _ => {}
                         }
-                    });
+                    }
                 }
-                WatchEvent::Deleted(node) => {
-                    tokio::spawn(async move {
-                        if let Err(e) = Self::node_deleted(&node, &config_map_api).await {
-                            error!("Error in node_deleted: {}", e);
-                        }
-                    });
+                Err(e) => {
+                    error!("Watch connection broken: {}", e);
                 }
-                _ => {}
+            }
+
+            if num_retries < NUM_WATCH_RETRIES {
+                num_retries += 1;
+                // Implement exponential backoff with jitter
+                let jitter = rng.gen_range(0..500);
+                warn!(
+                    "Retrying watch in {} seconds...",
+                    (delay_duration + Duration::from_millis(jitter)).as_secs()
+                );
+                time::sleep(delay_duration + Duration::from_millis(jitter)).await;
+                // Increase the delay for next retry
+                delay_duration = Duration::from_secs(std::cmp::min(
+                    max_delay.as_secs(),
+                    delay_duration.as_secs() * 2,
+                ));
+            } else {
+                let message = format!("Max retries {} exceeded", NUM_WATCH_RETRIES);
+                return Err(anyhow::Error::msg(message));
             }
         }
-
-        // TODO: Implement reconnect with exponential backoff logic
-        warn!("Watch connection broken!");
-
-        Ok(())
     }
 }

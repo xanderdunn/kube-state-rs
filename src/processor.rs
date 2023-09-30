@@ -180,6 +180,8 @@ impl TransactionProcessor {
                             "Restoring metadata stored for node {}: {:?}",
                             node_name, stored_labels
                         );
+                        // TODO: We don't need to crash on a conflict error here, we can just
+                        // return None so that someone else will process the transaction.
                         replace_node_labels(&self.all_nodes, &node, &stored_labels).await?;
                         Ok(Some(transaction.clone()))
                     }

@@ -1010,9 +1010,8 @@ mod tests {
         // 3. Delete the node, add the node back to the cluster, and assert that the label is restored
         //
         delete_node(client.clone(), test_node_name).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         create_node(client.clone(), test_node_name).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
         assert_node_label_has_value(
             client.clone(),
             test_node_name,
@@ -1148,7 +1147,7 @@ mod tests {
         // 4. Add the node back to the cluster and assert that the label is restored
         //
         create_node(client.clone(), test_node_name).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
         assert_node_label_has_value(
             client.clone(),
             test_node_name,
