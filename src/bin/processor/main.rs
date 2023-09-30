@@ -19,7 +19,6 @@ async fn main() -> Result<(), anyhow::Error> {
     create_namespace(&client, NODE_METADATA_NAMESPACE).await?;
     let transaction_processor = TransactionProcessor::new(&client);
 
-    // TODO: Spawn one for each available core
     transaction_processor.process().await?;
 
     Ok(())

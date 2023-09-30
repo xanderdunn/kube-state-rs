@@ -7,13 +7,16 @@ use kube::{
 use kube_leader_election::{LeaseLock, LeaseLockParams, LeaseLockResult};
 use rand::seq::SliceRandom;
 use tokio::time::Duration;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 // Local
 use crate::utils::{
     code_key_slashes, replace_config_map_data, replace_node_labels, LABEL_STORE_VERSION_KEY,
     NODE_METADATA_NAMESPACE, TRANSACTION_NAMESPACE, TRANSACTION_TYPE_KEY,
 };
+
+/// The duration the service has as leader to process a transaction before it expires.
+const LEASE_LOCK_TTL: Duration = Duration::from_secs(5);
 
 enum TransactionProcessorState {
     FetchTransactions,
@@ -24,6 +27,7 @@ enum TransactionProcessorState {
 }
 
 pub struct TransactionProcessor {
+    client: Client,
     transactions: Api<ConfigMap>,
     node_metadata: Api<ConfigMap>,
     all_nodes: Api<Node>,
@@ -35,6 +39,7 @@ impl TransactionProcessor {
         let node_metadata: Api<ConfigMap> =
             Api::namespaced(client.clone(), NODE_METADATA_NAMESPACE);
         Self {
+            client: client.clone(),
             transactions,
             node_metadata,
             all_nodes: Api::all(client.clone()),
@@ -112,41 +117,45 @@ impl TransactionProcessor {
     /// data for this particular node.
     /// While we have an acquired lock, no other replica of this service should be able to modify
     /// that particular node.
+    /// All errors attempting to gain leadership are returned as `None` to indicate that we are not
+    /// the leader. This can happen for many reasons, including
     async fn leader_election(
         &self,
         transaction: &ConfigMap,
-    ) -> Result<Option<(LeaseLock, LeaseLockResult)>, anyhow::Error> {
+    ) -> Option<(LeaseLock, LeaseLockResult)> {
         let hostname = std::env::var("HOSTNAME").unwrap();
         let node_name = transaction.data.clone().unwrap()["node_name"].clone();
         // One should try to renew/acquire the lease before `lease_ttl` runs out.
         // E.g. if `lease_ttl` is set to 15 seconds, one should renew it every 5 seconds.
         let leadership = LeaseLock::new(
-            kube::Client::try_default().await?,
+            self.client.clone(),
             "default",
             LeaseLockParams {
                 holder_id: hostname,
                 // Both node names and lease names can be up to 253 characters long
                 lease_name: node_name.to_string(),
-                lease_ttl: Duration::from_secs(5),
+                lease_ttl: LEASE_LOCK_TTL,
             },
         );
 
-        // Run this in a background task and share the result with the rest of your application
-        let lease = leadership.try_acquire_or_renew().await?;
-        // `lease.acquired_lease` can be used to determine if we're leading or not
-        if lease.acquired_lease {
-            Ok(Some((leadership, lease)))
-        } else {
-            Ok(None)
-        }
+        Self::still_leader(&leadership)
+            .await
+            .map(|lease_result| (leadership, lease_result))
     }
 
-    async fn still_leader(lease: &LeaseLock) -> Result<Option<LeaseLockResult>, anyhow::Error> {
-        let lease_result = lease.try_acquire_or_renew().await?;
+    /// Attempt to acquire or renew a lease lock.
+    async fn still_leader(lease: &LeaseLock) -> Option<LeaseLockResult> {
+        let lease_result = match lease.try_acquire_or_renew().await {
+            Ok(lease) => lease,
+            Err(error) => {
+                info!("Failed to get lease lock: {:?}", error);
+                return None;
+            }
+        };
         if lease_result.acquired_lease {
-            Ok(Some(lease_result))
+            Some(lease_result)
         } else {
-            Ok(None)
+            None
         }
     }
 
@@ -171,19 +180,31 @@ impl TransactionProcessor {
                         stored_labels.remove(TRANSACTION_TYPE_KEY);
                         stored_labels.remove("node_name");
                         code_key_slashes(&mut stored_labels, false);
-                        if let Some(_lease_result) = Self::still_leader(lease).await? {
+                        if let Some(_lease_result) = Self::still_leader(lease).await {
                         } else {
                             // I am no longer the leader, do nothing.
                             return Ok(None);
                         }
                         debug!(
-                            "Restoring metadata stored for node {}: {:?}",
+                            "Restoring metadata stored for node {}: {:?}...",
                             node_name, stored_labels
                         );
-                        // TODO: We don't need to crash on a conflict error here, we can just
-                        // return None so that someone else will process the transaction.
-                        replace_node_labels(&self.all_nodes, &node, &stored_labels).await?;
-                        Ok(Some(transaction.clone()))
+                        match replace_node_labels(&self.all_nodes, &node, &stored_labels).await {
+                            Ok(()) => {
+                                debug!(
+                                    "Successfully restored metadata stored for node {}",
+                                    node_name
+                                );
+                                Ok(Some(transaction.clone()))
+                            }
+                            Err(error) => {
+                                info!(
+                                    "Failed to replace node labels on node {}: {}",
+                                    node_name, error
+                                );
+                                Ok(None)
+                            }
+                        }
                     }
                     Err(error) => {
                         match error {
@@ -235,7 +256,7 @@ impl TransactionProcessor {
             if node_labels.get(LABEL_STORE_VERSION_KEY).cloned().is_some() {
                 let mut updated_labels = node_labels.clone();
                 code_key_slashes(&mut updated_labels, true);
-                if let Some(_lease_result) = Self::still_leader(lease).await? {
+                if let Some(_lease_result) = Self::still_leader(lease).await {
                 } else {
                     // I am no longer the leader, do nothing.
                     return Ok(None);
@@ -244,13 +265,24 @@ impl TransactionProcessor {
                     "Updating metadata stored for node {}: {:?}...",
                     node_name, updated_labels
                 );
-                replace_config_map_data(&self.node_metadata, stored_metadata, &updated_labels)
-                    .await?;
-                debug!(
-                    "Successfully updated metadata stored for node {}",
-                    node_name
-                );
-                Ok(Some(transaction.clone()))
+                match replace_config_map_data(&self.node_metadata, stored_metadata, &updated_labels)
+                    .await
+                {
+                    Ok(()) => {
+                        debug!(
+                            "Successfully updated metadata stored for node {}",
+                            node_name
+                        );
+                        Ok(Some(transaction.clone()))
+                    }
+                    Err(error) => {
+                        info!(
+                            "Failed to update metadata stored for node {}: {}",
+                            node_name, error
+                        );
+                        Ok(None)
+                    }
+                }
             } else {
                 debug!("Node {} does not have the `{}` label, so ignoring and deleting the transaction", LABEL_STORE_VERSION_KEY, node_name);
                 Ok(Some(transaction.clone()))
@@ -281,7 +313,7 @@ impl TransactionProcessor {
             data: Some(labels),
             ..Default::default()
         };
-        if let Some(_lease_result) = Self::still_leader(lease).await? {
+        if let Some(_lease_result) = Self::still_leader(lease).await {
         } else {
             // I am no longer the leader, do nothing.
             return Ok(None);
@@ -413,7 +445,7 @@ impl TransactionProcessor {
                 }
                 TransactionProcessorState::LeaderElection(transaction) => {
                     debug!("State: LeaderElection");
-                    if let Some((lease, lease_result)) = self.leader_election(&transaction).await? {
+                    if let Some((lease, lease_result)) = self.leader_election(&transaction).await {
                         state =
                             TransactionProcessorState::Process(transaction, lease, lease_result);
                     } else {

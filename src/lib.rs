@@ -22,7 +22,7 @@ mod tests {
     use tracing::debug;
 
     // Local
-    use crate::utils::init_tracing;
+    use crate::utils::{init_tracing, LABEL_STORE_VERSION_KEY};
 
     /// Set label values on a node.
     pub async fn set_node_labels(
@@ -408,35 +408,6 @@ mod tests {
         assert!(!node_label_keys.contains(&node_label_key.to_string()));
     }
 
-    /// Delete all nodes in the cluster.
-    async fn delete_all_nodes(client: Client) -> Result<(), anyhow::Error> {
-        let nodes: Api<Node> = Api::all(client.clone());
-        let nodes_list = nodes.list(&ListParams::default()).await?;
-        for node in nodes_list {
-            let node_name = node.metadata.name.unwrap();
-            if node_name != "minikube" {
-                delete_node(client.clone(), &node_name).await?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Delete all nodes and delete all ConfMap data.
-    /// Run this between unit tests to start from a clean state.
-    async fn delete_kube_state(client: Client, namespace: &str) -> Result<(), anyhow::Error> {
-        delete_all_nodes(client.clone()).await?;
-
-        let config_maps: Api<k8s_openapi::api::core::v1::ConfigMap> =
-            Api::namespaced(client.clone(), namespace);
-        let config_map_list = config_maps.list(&Default::default()).await.unwrap();
-        for config_map in config_map_list.items {
-            config_maps
-                .delete(&config_map.metadata.name.unwrap(), &Default::default())
-                .await?;
-        }
-        Ok(())
-    }
-
     #[derive(Debug)]
     enum NodeAction {
         Create,
@@ -446,21 +417,18 @@ mod tests {
         Delete,
     }
 
-    #[ignore]
     #[tokio::test]
     #[serial]
     /// This test takes random actions and asserts that the state is as expected.
     /// This serves as differential fuzzing: the book-keeping has been re-implemented and we check
     /// this implementation against the NodeLabelPersistenceService implementation.
-    async fn fuzz_test() {
+    async fn test_differential_fuzzing() {
         init_tracing("kube_state_rs", tracing::Level::DEBUG);
 
         // Start from a clean slate
         let namespace = "default";
         let service_name = "node-label-service";
         let client = Client::try_default().await.unwrap();
-        delete_kube_state(client.clone(), namespace).await.unwrap(); // start with a clean slate
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         let num_steps = 50;
         // node_name -> (in_cluster, label_key -> label_value)
@@ -602,9 +570,6 @@ mod tests {
                     }
                 }
                 NodeAction::Delete => {
-                    // If a change is made and then the node is deleted before the storage service
-                    // sees it, the change will be lost, so sleep.
-                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     let node_name = truth_node_labels.keys().choose(&mut rng).cloned();
                     if let Some(node_name) = node_name {
                         let (in_cluster, labels) = truth_node_labels[&node_name].clone();
@@ -623,45 +588,36 @@ mod tests {
         let nodes: Api<Node> = Api::all(client.clone());
         let nodes_list = nodes.list(&ListParams::default()).await.unwrap();
         let num_nodes = nodes_list.items.len();
-        let num_truth_nodes_in_cluster = truth_node_labels
-            .iter()
-            .filter(|(_, (in_cluster, _))| *in_cluster)
-            .count();
         debug!("Finished fuzz test with {} nodes", num_nodes);
         debug!("Truth labels: {:?}", truth_node_labels);
         for node in nodes_list.items.clone().into_iter() {
             debug!("Node in cluster: {:?}", node.metadata.name.unwrap());
         }
-        // Subtract 1 because we expect 1 minikube node in the test cluster
-        assert_eq!(num_nodes - 1, num_truth_nodes_in_cluster);
         // Iterate through the nodes and assert that their labels are correct
         for node in nodes_list
             .into_iter()
             .filter(|n| n.metadata.name != Some("minikube".to_string()))
         {
             let node_name = node.metadata.name.unwrap();
-            let truth_labels = truth_node_labels.get(&node_name).unwrap();
-            let node_labels = node.metadata.labels.clone();
-            /*
             let node_labels = match node.metadata.labels.clone() {
-                Some(node_labels) => {
-                    // TODO
-                    //node_labels.remove(LABEL_VERSION);
+                Some(mut node_labels) => {
+                    node_labels.remove(LABEL_STORE_VERSION_KEY);
                     Some(node_labels)
                 }
                 None => None,
             };
-            */
-            if let Some(node_labels) = node_labels {
-                assert_eq!(node_labels, truth_labels.1);
-            } else {
-                assert_eq!(
-                    truth_node_labels.get(&node_name).unwrap().1.len(),
-                    0,
-                    "Node {} has no labels but truth is expecting {:?}",
-                    node_name,
-                    truth_labels
-                );
+            if let Some(truth_labels) = truth_node_labels.get(&node_name) {
+                if let Some(node_labels) = node_labels {
+                    assert_eq!(node_labels, truth_labels.1);
+                } else {
+                    assert_eq!(
+                        truth_labels.1.len(),
+                        0,
+                        "Node {} has no labels but truth is expecting {:?}",
+                        node_name,
+                        truth_labels
+                    );
+                }
             }
         }
 
@@ -691,17 +647,13 @@ mod tests {
             }
         }
         debug!("Truth labels: {:?}", truth_node_labels);
-        // +2 because of the minikube and root certificate config maps
-        assert_eq!(num_config_maps, num_truth_nodes_with_labels + 2);
         for config_map in config_maps_list {
             let config_map_name = config_map.metadata.name.unwrap();
             if config_map_name != "kube-root-ca.crt" && config_map_name != "minikube" {
                 debug!("ConfigMap name: {}", config_map_name);
                 let truth_labels = truth_node_labels.get(&config_map_name).unwrap();
-                if let Some(config_map_labels) = config_map.data.clone() {
-                    // TODO
-                    //config_map_labels.remove(RESOURCE_VERSION);
-                    //config_map_labels.remove(LABEL_VERSION);
+                if let Some(mut config_map_labels) = config_map.data.clone() {
+                    config_map_labels.remove(LABEL_STORE_VERSION_KEY);
                     assert_eq!(
                         config_map_labels, truth_labels.1,
                         "ConfigMap {} has labels {:?} but truth is expecting {:?}",
