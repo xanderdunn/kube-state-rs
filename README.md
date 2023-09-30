@@ -54,11 +54,10 @@ Replicating the Transaction Processor service provides both horizontal scaling a
 - `cargo test`
 
 ## Assumptions
-- It's important when we deploy this that we make multiple nodes across different regions available to the service, and that region is set in the key `kubernetes.io/hostname`.
 - Node labels can be modified by anyone from anywhere at anytime. If we were to instead apply all label changes through a particular pod service with an exposed API, this problem would be much easier to solve. That service could store the metadata, and a separate service could trigger applying the metadata to the node by reading from storage. See [#6](https://github.com/xanderdunn/kube-state-rs/issues/6) for details.
-- Every node has a `metadata.name`, and it assumes that the name will be a unique identifier. Suppose unique node names `node-1...node-5000`. I assume that when `node-n` leaves the cluster, we can expect `node-n` to return to the cluster, rather than always returning to the cluster with a new identifier, such as `node-5001`. If that's not the case, then we need a zookeeper strategy to apply labels to at most one node, regardless of node identifier.
+- Every node has a `metadata.name`, and it is a unique identifier. Suppose unique node names `node-1...node-5000`. When `node-n` leaves the cluster, we can expect `node-n` to return to the cluster, rather than returning to the cluster with a new identifier, such as `node-5001`. If that's not the case, then we need a zookeeper strategy to apply labels to at most one node, regardless of node identifier.
 - The frequency of node metadata changes is approximately the same across all nodes.
-- One ConfigMap per node is used for storage. Any particular node will have a relatively small number of labels (not hundreds or thousands of labels per node).
+- One ConfigMap per node is used for storage. Any particular node will have a relatively small number of labels, not hundreds or thousands of labels per node.
 - A node label key might contain characters `[-._a-zA-Z0-9\/]+`, which is a superset of the characters allowed in a `ConfigMap` key: `[-._a-zA-Z0-9]+`. For example, the label key `beta.kubernetes.io/os` is not compatible with storage as a key in a `ConfigMap`. As a workaround, we encode all slashes as the reserved token `---SLASH---` when stored as keys in the `ConfigMap` and then decode those tokens into `/` when restoring labels.
 - Up to 5,000 nodes in a cluster. More nodes will be managed with cluster federation.
 - We want 99.9% availability. Losing a label change is to be avoided with high certainty.
@@ -76,4 +75,4 @@ We want to achieve availability and eventual consistency in the face of:
 - Permanent: In this case some other replica will eventually be chosen. A liveness and readiness check will fail and Kubernetes will replace this node.
 - Hardware: A node's hardware dies. Kubernetes will remove this replica and replace it. Kubernetes node metadata updates are atomic, so any operation should completely succeed or completely fail.
 - Network: This could be considered a crash or transient failure. Label updates both on Nodes and on ConfigMaps are atomic and idempotent.
-- Response: Stale information should not occur because etcd has a strong consistency guarantee.
+- Response: Stale information should not occur because etcd has a strong consistency guarantee. If we do have stale information, checking the `label_version` as well as failing on outdated `ResourceVersion` will prevent applying stale information.
