@@ -471,10 +471,11 @@ mod tests {
 
             match action {
                 NodeAction::Create => {
+                    let node_name_length = rng.gen_range(1..254);
                     let node_name: String = rng
                         .clone()
                         .sample_iter(&Alphanumeric)
-                        .take(10)
+                        .take(node_name_length)
                         .map(char::from)
                         .collect();
                     let node_name = node_name.to_lowercase();
