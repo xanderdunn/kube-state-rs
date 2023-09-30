@@ -259,7 +259,13 @@ impl TransactionProcessor {
                     .get(LABEL_VERSION_KEY)
                     .cloned()
                     .unwrap();
-                if node_label_version > stored_label_version {
+                debug!(
+                    "node_label_version > stored_label_version | {} > {}",
+                    node_label_version, stored_label_version
+                );
+                if node_label_version.parse::<u64>().unwrap()
+                    > stored_label_version.parse::<u64>().unwrap()
+                {
                     // We throw away the transaction if it was not made based on the latest stored
                     // labels. This is to prevent the edge case where a node is rapidly added and
                     // deleted and an empty transaction.deleted causes all of our stored labels to
@@ -298,7 +304,7 @@ impl TransactionProcessor {
                         }
                     }
                 } else {
-                    debug!("Node {} has a lower version than the stored version, so ignoring and deleting the transaction", node_name);
+                    debug!("Node {} has a lower version {} than the stored version {}, so ignoring and deleting the transaction", node_name, node_label_version, stored_label_version);
                     Ok(Some(transaction.clone()))
                 }
             } else {

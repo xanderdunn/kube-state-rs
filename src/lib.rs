@@ -266,6 +266,14 @@ mod tests {
         )
         .await
         .unwrap();
+        println!("here1");
+        assert_node_label_has_value(
+            client.clone(),
+            test_node_name,
+            node_label_key,
+            Some(&node_label_value.to_string()),
+        )
+        .await;
 
         //
         // 3. Delete the node so that the label is stored
@@ -298,9 +306,10 @@ mod tests {
             .items
             .iter()
             .any(|n| n.metadata.name == Some(test_node_name.to_string())));
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
 
         // Assert that the node has the stored label value
+        println!("here2");
         assert_node_label_has_value(
             client.clone(),
             test_node_name,
@@ -308,6 +317,7 @@ mod tests {
             Some(&node_label_value.to_string()),
         )
         .await;
+        println!("here3");
     }
 
     #[tokio::test]
