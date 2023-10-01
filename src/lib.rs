@@ -22,7 +22,7 @@ mod tests {
     use tracing::debug;
 
     // Local
-    use crate::utils::{init_tracing, LABEL_STORE_VERSION_KEY};
+    use crate::utils::{init_tracing, LABEL_STORE_VERSION_KEY, LABEL_VERSION_KEY};
 
     /// Set label values on a node.
     pub async fn set_node_labels(
@@ -616,6 +616,7 @@ mod tests {
             let node_labels = match node.metadata.labels.clone() {
                 Some(mut node_labels) => {
                     node_labels.remove(LABEL_STORE_VERSION_KEY);
+                    node_labels.remove(LABEL_VERSION_KEY);
                     Some(node_labels)
                 }
                 None => None,
@@ -668,6 +669,7 @@ mod tests {
                 let truth_labels = truth_node_labels.get(&config_map_name).unwrap();
                 if let Some(mut config_map_labels) = config_map.data.clone() {
                     config_map_labels.remove(LABEL_STORE_VERSION_KEY);
+                    config_map_labels.remove(LABEL_VERSION_KEY);
                     assert_eq!(
                         config_map_labels, truth_labels.1,
                         "ConfigMap {} has labels {:?} but truth is expecting {:?}",

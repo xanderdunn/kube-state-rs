@@ -305,6 +305,7 @@ impl TransactionProcessor {
                     }
                 } else {
                     debug!("Node {} has a lower version {} than the stored version {}, so ignoring and deleting the transaction", node_name, node_label_version, stored_label_version);
+                    // It's stale data, so delete the transaction
                     Ok(Some(transaction.clone()))
                 }
             } else {
